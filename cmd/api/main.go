@@ -28,7 +28,7 @@ func main() {
 		log.Fatalf("load vectorizer: %v", err)
 	}
 
-	idx, err := search.LoadIndex(indexPath)
+	idx, err := search.LoadIVFIndex(indexPath)
 	if err != nil {
 		log.Fatalf("load index: %v", err)
 	}

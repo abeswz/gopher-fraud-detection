@@ -3,45 +3,96 @@ package search
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
 	"os"
 )
 
-type Index struct {
-	Vectors []int16
-	Labels  []uint8
-	N       int
+const ivfMagic = "IVF1"
+const dims = 14
+
+// IVFIndex stores vectors grouped by cluster for fast approximate KNN.
+// Binary format (little-endian):
+//
+//	[4]       "IVF1" magic
+//	[4]       uint32 C (number of clusters)
+//	[4]       uint32 N (total vectors)
+//	[C×14×4]  float32 centroids
+//	[C×4]     uint32 cluster starts (index into Vectors/Labels)
+//	[C×4]     uint32 cluster sizes
+//	[N×14×2]  int16 vectors (all vectors contiguous, not interleaved with labels)
+//	[N×1]     uint8 labels
+type IVFIndex struct {
+	C         int
+	N         int
+	Centroids []float32
+	Starts    []uint32
+	Sizes     []uint32
+	Vectors   []int16
+	Labels    []uint8
 }
 
-func LoadIndex(path string) (*Index, error) {
+func LoadIVFIndex(path string) (*IVFIndex, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
 
-	if len(data) < 4 {
-		return nil, fmt.Errorf("index file too small: %d bytes", len(data))
+	if len(data) < 12 {
+		return nil, fmt.Errorf("index too small: %d bytes", len(data))
 	}
 
-	n := int(binary.LittleEndian.Uint32(data[0:4]))
+	if string(data[0:4]) != ivfMagic {
+		return nil, fmt.Errorf("bad magic: %q (want %q)", data[0:4], ivfMagic)
+	}
 
-	const recordSize = 14*2 + 1
-	expected := 4 + n*recordSize
+	c := int(binary.LittleEndian.Uint32(data[4:8]))
+	n := int(binary.LittleEndian.Uint32(data[8:12]))
+
+	centSize := c * dims * 4
+	startsSize := c * 4
+	sizesSize := c * 4
+	vecsSize := n * dims * 2
+	labelsSize := n
+	expected := 12 + centSize + startsSize + sizesSize + vecsSize + labelsSize
 	if len(data) != expected {
-		return nil, fmt.Errorf("index size mismatch: got %d bytes, want %d", len(data), expected)
+		return nil, fmt.Errorf("size mismatch: got %d, want %d", len(data), expected)
 	}
 
-	vectors := make([]int16, n*14)
+	off := 12
+
+	centroids := make([]float32, c*dims)
+	for i := range centroids {
+		centroids[i] = math.Float32frombits(binary.LittleEndian.Uint32(data[off:]))
+		off += 4
+	}
+
+	starts := make([]uint32, c)
+	for i := range starts {
+		starts[i] = binary.LittleEndian.Uint32(data[off:])
+		off += 4
+	}
+
+	sizes := make([]uint32, c)
+	for i := range sizes {
+		sizes[i] = binary.LittleEndian.Uint32(data[off:])
+		off += 4
+	}
+
+	vectors := make([]int16, n*dims)
+	for i := range vectors {
+		vectors[i] = int16(binary.LittleEndian.Uint16(data[off:]))
+		off += 2
+	}
+
 	labels := make([]uint8, n)
+	copy(labels, data[off:off+n])
 
-	offset := 4
-	for i := 0; i < n; i++ {
-		for j := 0; j < 14; j++ {
-			vectors[i*14+j] = int16(binary.LittleEndian.Uint16(data[offset : offset+2]))
-			offset += 2
-		}
-		labels[i] = data[offset]
-		offset++
-	}
-
-	return &Index{Vectors: vectors, Labels: labels, N: n}, nil
+	return &IVFIndex{
+		C: c, N: n,
+		Centroids: centroids,
+		Starts:    starts,
+		Sizes:     sizes,
+		Vectors:   vectors,
+		Labels:    labels,
+	}, nil
 }

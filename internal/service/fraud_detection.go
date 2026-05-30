@@ -7,7 +7,7 @@ import (
 )
 
 var (
-	Idx *search.Index
+	Idx *search.IVFIndex
 	Vec *vectorizer.Vectorizer
 )
 
