@@ -2,36 +2,15 @@
 
 Fraud detection API for [Rinha de Backend 2026](https://github.com/zanfranceschi/rinha-de-backend-2026).
 
-Two Go API instances behind HAProxy. Each loads a 3M-vector int16 index at startup and scores transactions via brute-force KNN (k=5, L2) over a 14-dim feature vector.
+Two Go instances behind HAProxy. Each loads a 3M-vector int16 index at startup and scores transactions via brute-force KNN (k=5, L2) over a 14-dim feature vector.
 
 **Limits:** 1 CPU, 350 MB RAM total.
-
----
-
-## Prerequisites
-
-- Go 1.26+
-- Docker + Docker Compose
-- [uv](https://docs.astral.sh/uv/getting-started/installation/) (Python package manager)
-- [k6](https://k6.io/docs/get-started/installation/) (load testing)
-- `jq`, `gh` (GitHub CLI)
-
-The following files are not in the repo and must be obtained separately:
-```
-resources/references.json.gz   # 3M labeled transactions (source data)
-resources/normalization.json    # normalization constants
-resources/mcc_risk.json         # MCC risk scores
-test/test.js                    # k6 test script
-```
 
 ---
 
 ## Local development
 
 ```bash
-# Build the vector index from source data (~87 MB, takes ~10s)
-make index
-
 # Run all unit tests
 go test ./...
 
@@ -53,18 +32,6 @@ Output:
 ```
 p99:4ms score:5800 FP:12 FN:3 ERR:0
 ```
-
----
-
-## Submission
-
-Builds the Docker image, pushes to ghcr.io, creates the `submission` branch, and opens the test issue:
-
-```bash
-make submission
-```
-
-Requires `docker login ghcr.io` and `gh auth login` beforehand.
 
 ---
 
