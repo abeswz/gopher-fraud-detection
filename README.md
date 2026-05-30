@@ -2,19 +2,38 @@
 
 Fraud detection API for [Rinha de Backend 2026](https://github.com/zanfranceschi/rinha-de-backend-2026).
 
-Two Go instances behind HAProxy. Each loads a 3M-vector int16 index at startup and scores transactions via brute-force KNN (k=5, L2) over a 14-dim feature vector.
+Two Go instances behind HAProxy. Each loads a 3M-vector IVF index at startup and scores transactions via approximate KNN (k=5, L2, IVF C=2000 nprobe=20) over a 14-dim feature vector.
 
 **Limits:** 1 CPU, 350 MB RAM total.
+
+---
+
+## Prerequisites
+
+- Go 1.26+
+- Docker + Docker Compose
+- [uv](https://docs.astral.sh/uv/) (Python package manager)
+- [k6](https://k6.io/docs/get-started/installation/) (load testing)
+- `jq`
+
+Files not in the repo (obtain separately):
+```
+resources/references.json.gz   # 3M labeled transactions
+resources/normalization.json    # normalization constants
+resources/mcc_risk.json         # MCC risk scores
+test/test.js                    # k6 test script
+test/test-data.json             # k6 test dataset
+```
 
 ---
 
 ## Local development
 
 ```bash
-# Run all unit tests
+# Run unit tests
 go test ./...
 
-# Build the binary
+# Build binary
 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o fraud-api ./cmd/api
 ```
 
@@ -22,7 +41,7 @@ CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o fraud-api ./cmd/api
 
 ## Local benchmark
 
-Spins up the full stack (HAProxy + 2 API instances), waits for ready, runs k6, prints results:
+Builds the IVF index (K-means, ~5 min first run), spins up the full stack, runs k6:
 
 ```bash
 make bench
@@ -43,10 +62,10 @@ Client → HAProxy :9999
            └── api2  unix:/run/sock/api2.sock
 ```
 
-Each instance loads `index/references.bin` (int16, N×14 dims + label) at startup. No shared state between instances.
+Each instance loads `index/references.bin` (IVF: 2000 clusters, int16 vectors) at startup. No shared state.
 
 Pipeline per request:
 1. Decode JSON → `FraudRequest`
-2. Vectorize to `[14]float32` (normalization + MCC risk)
-3. KNN(k=5) over 3M vectors → fraud count
+2. Vectorize → `[14]float32` (normalization + MCC risk)
+3. IVF KNN(k=5, nprobe=20): find 20 nearest clusters → search ~30K vectors → fraud count
 4. `fraud_score = count / 5.0`, `approved = score < 0.6`
