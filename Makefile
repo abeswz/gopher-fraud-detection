@@ -4,7 +4,7 @@ READY_TIMEOUT  := 300
 .PHONY: index bench submission
 
 index:
-	uv run ml/build_index.py
+	uv run --project ml ml/build_index.py
 
 bench: index
 	docker compose --compatibility down
