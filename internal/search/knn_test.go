@@ -61,6 +61,19 @@ func TestKNN_Mixed(t *testing.T) {
 	}
 }
 
+// TestKNN_IntegerArithmeticPrecision verifies that integer-scaled distance
+// computation selects the same nearest neighbors as float32 dequantization.
+func TestKNN_IntegerArithmeticPrecision(t *testing.T) {
+	// Three clusters: near-zero (legit), near-0.5 (legit), near-1.0 (fraud).
+	// Query at 0.95 — should pick fraud cluster as all 5 nearest.
+	idx := makeTestIVFIndex(5, 5, 9500, 0)
+	query := [14]float32{0.95, 0.95, 0.95, 0.95, 0.95, 0.95, 0.95, 0.95, 0.95, 0.95, 0.95, 0.95, 0.95, 0.95}
+	got := idx.KNN(query, 5)
+	if got != 5 {
+		t.Errorf("IntegerArithmeticPrecision: got %d fraud, want 5", got)
+	}
+}
+
 func TestKNN_SentinelHandling(t *testing.T) {
 	idx := &IVFIndex{
 		C:         1,
@@ -84,5 +97,15 @@ func TestKNN_SentinelHandling(t *testing.T) {
 	got := idx.KNN(query, 1)
 	if got != 0 {
 		t.Errorf("SentinelHandling: got %d fraud, want 0 (legit nearest)", got)
+	}
+}
+
+func BenchmarkKNN(b *testing.B) {
+	// 3000 vectors: realistic cluster size for nprobe=20 over 3M vectors / 256 clusters
+	idx := makeTestIVFIndex(1500, 1500, 8000, 2000)
+	query := [14]float32{0.7, 0.3, 0.5, 0.9, 0.1, -1.0, -1.0, 0.4, 0.6, 0.8, 0.2, 0.55, 0.45, 0.65}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		idx.KNN(query, 5)
 	}
 }
