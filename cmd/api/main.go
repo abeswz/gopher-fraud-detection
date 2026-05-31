@@ -28,15 +28,16 @@ func main() {
 		log.Fatalf("load vectorizer: %v", err)
 	}
 
-	idx, err := search.LoadIVFIndex(indexPath)
+	ivf, err := search.LoadIVFIndex(indexPath)
 	if err != nil {
 		log.Fatalf("load index: %v", err)
 	}
+	defer ivf.Close()
 
 	service.Vec = vec
-	service.Idx = idx
+	service.Idx = ivf
 
-	log.Printf("loaded %d vectors", idx.N)
+	log.Printf("loaded %d vectors", ivf.N)
 
 	sock := envOr("SOCK", "")
 	if sock == "" {
