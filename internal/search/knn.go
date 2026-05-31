@@ -1,6 +1,6 @@
 package search
 
-const nprobe = 20
+const nprobe = 15
 
 type knnEntry struct {
 	dist  float32
