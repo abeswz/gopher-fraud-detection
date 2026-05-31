@@ -4,7 +4,7 @@
 
 ## Status
 
-Fully implemented. IVF search optimized (C=4000, nprobe=15). Pending: `make bench` to validate end-to-end score.
+Score **+5322 / +6000**. IVF optimized (C=4000, nprobe=15). Two gaps remain: detection (-463 pts) and latency (-214 pts).
 
 ---
 
@@ -70,17 +70,63 @@ Each instance: 168 MB RAM, 0.45 CPU. HAProxy: 14 MB, 0.10 CPU. Total: 1 CPU, 350
 ## Last bench result
 
 ```
-p99:2002ms  score:-6000  FP:0  FN:0  ERR:13712
+p99:1.64ms  score:+5322  FP:19  FN:5  ERR:0
 ```
 
-**Before IVF fix** (brute-force). Running `make bench` now with optimized IVF.
+C=4000, nprobe=15. KNN microbenchmark: 79μs/op. Full request p99: 1.64ms → 1.56ms spent outside KNN (JSON, vectorizer, socket, HAProxy).
 
 ---
 
-## Next step
+## Plan — reaching +6000
 
-```bash
-make bench   # rebuilds index (K-means ~4min), then Docker + k6
-```
+### Gap breakdown
 
-Expected: p99 < 10ms, ERR ≈ 0, score > +4000.
+| Gap | Points lost | Max recoverable |
+|---|---|---|
+| Detection errors (19 FP + 5 FN) | -463 | +463 |
+| Latency p99=1.64ms vs ≤1ms | -214 | +214 |
+
+### Step 1 — tune threshold and k (no index rebuild, low risk)
+
+**Why:** 19 FP weight 1 each, 5 FN weight 3 each = 34 weighted errors. FN costs 3× more, so reducing FN is priority. Different k or threshold can shift this balance.
+
+**What to test:**
+- `k=7` (currently 5) — more voters → more robust majority, likely fewer FN
+- `threshold=0.5` (currently 0.6) — harder to approve → fewer FN, likely more FP
+- `threshold=0.7` — easier to approve → fewer FP, likely more FN
+
+**How:** change constants in `service/fraud_detection.go`, run `make bench` (no index rebuild needed — skip `make index` by running docker steps directly), compare FP/FN/score.
+
+**Constraint:** `make bench` always runs `index` (4 min rebuild). Workaround: run docker+k6 steps manually to iterate faster.
+
+### Step 2 — profile full HTTP request path
+
+**Why:** KNN=79μs but p99=1.64ms → 1.56ms unaccounted. Closing the latency gap to <1ms requires knowing where that time goes.
+
+**What to do:** add `net/http/pprof` endpoint to the API (behind a build tag or env var), run `make bench`, capture CPU profile under real load with `go tool pprof http://localhost:PORT/debug/pprof/profile?seconds=30`.
+
+**Candidates for hidden latency:**
+- `encoding/json` Unmarshal/Marshal (reflection-based, slow)
+- `time.Parse` inside vectorizer for `requested_at`
+- GC pressure from per-request allocations (slice growth in KNN, JSON decode)
+- HAProxy → unix socket round-trip overhead
+
+### Step 3 — reduce allocations in hot path (after profiling confirms)
+
+**Likely fixes based on common Go patterns:**
+- Pre-allocate `topC` and `top` slices outside KNN, pass as args (avoids `make` per request)
+- Replace `encoding/json` with `github.com/bytedance/sonic` or hand-rolled decoder for the known-schema request
+- Reuse `[14]float32` query vector (already on stack — fine)
+
+### Step 4 — nprobe tuning (after detection is solved)
+
+nprobe=15 may miss some real neighbors in clusters 16-20 → contributes to FP/FN. Test nprobe=18 after detection is improved to see if recall gains outweigh latency cost (~15μs more).
+
+---
+
+## Score history
+
+| Date | Score | p99 | FP | FN | ERR | Config |
+|---|---|---|---|---|---|---|
+| 2026-05-30 | -6000 | 2002ms | 0 | 0 | 13712 | brute-force KNN |
+| 2026-05-30 | **+5322** | **1.64ms** | 19 | 5 | 0 | IVF C=4000 nprobe=15 |
