@@ -37,6 +37,8 @@ Each instance: 168 MB RAM, 0.45 CPU. HAProxy: 14 MB, 0.10 CPU. Total: 1 CPU, 350
 - `internal/handler/fraud_score.go` — pre-computed 6-entry response array, zero JSON encoding
 - `ml/build_index.py` — `--algo {vptree,ivf}` flag (vptree default); IVF: MiniBatchKMeans(C=4000, n_init=3); VP: recursive DFS tree → VPT1 binary
 - `Makefile` — `index`, `bench`, `bench-fast`, `submission` targets
+- `references/tools/profile.sh` — CPU/mem profile (`vp|ivf` × `serial|parallel`); output → `references/performance/`
+- `references/tools/trace.sh` — execution trace (`vp|ivf`); output → `references/performance/`
 - Tests — 21 unit tests
 
 ---

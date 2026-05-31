@@ -155,6 +155,12 @@ make bench
 
 # Push submission branch + open test issue
 make submission
+
+# CPU/mem profile (output → references/performance/)
+./references/tools/profile.sh <vp|ivf> <serial|parallel>
+
+# Execution trace (output → references/performance/)
+./references/tools/trace.sh <vp|ivf>
 ```
 
 ---
