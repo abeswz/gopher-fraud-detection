@@ -4,7 +4,7 @@
 
 ## Status
 
-Hybrid pipeline implemented and benchmarked locally. All tests pass.
+Hybrid pipeline implemented, benchmarked, and merged to main. All tests pass.
 p99 = 0.42ms (MAX score), FP:20, FN:5 — slightly worse than IVF-only (FP:19, FN:5) but within tolerance.
 Decision tree with 8 confident leaves intercepts a tiny fraction of requests; no retraining needed.
 
@@ -27,7 +27,7 @@ Each instance: 168 MB RAM, 0.45 CPU. HAProxy: 14 MB, 0.10 CPU. Total: 1 CPU, 350
 ### Fraud pipeline per request
 
 ```
-JSON decode → vectorize → fast_path rules → decision tree → IVF k-NN → response
+JSON decode → fast_path rules → vectorize → decision tree → IVF k-NN → response
 ```
 
 1. **fast_path** — heuristic rules for obviously safe/risky transactions (zero allocations)
@@ -50,7 +50,7 @@ JSON decode → vectorize → fast_path rules → decision tree → IVF k-NN →
 - `ml/train_decision_tree.py` — trains sklearn tree on reference dataset, confidence=0.95
 - `ml/gen_tree_go.py` — generates `internal/search/decision_tree.go` from trained model
 - `Makefile` — `index`, `bench`, `bench-fast`, `submission` targets
-- Tests — 21+ unit tests
+- Tests — 25 unit tests
 
 ---
 
