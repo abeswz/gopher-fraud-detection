@@ -54,6 +54,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("load IVF index: %v", err)
 		}
+		defer ivf.Close()
 		idx = ivf
 		n = ivf.N
 	case "VPT1":

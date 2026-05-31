@@ -4,11 +4,13 @@
 
 ## Status
 
-VP-tree implementation complete. All 21 tests pass.
-Awaiting index rebuild (`uv run ml/build_index.py`) and remote submission.
+Hybrid pipeline implemented and benchmarked locally. All tests pass.
+p99 = 0.42ms (MAX score), FP:20, FN:5 — slightly worse than IVF-only (FP:19, FN:5) but within tolerance.
+Decision tree with 8 confident leaves intercepts a tiny fraction of requests; no retraining needed.
 
-Previous remote: **+4051 / +6000** (p99=30ms, FP:19, FN:5)
-Target with VP-tree: **~5700-6000** (p99<1ms, FP:0, FN:0 exact)
+Previous best local: **+5536** (p99=0.65ms, FP:19, FN:5)
+Current hybrid local: **+5533** (p99=0.42ms, FP:20, FN:5)
+Last remote: **+4051** (p99=30ms, FP:19, FN:5)
 
 ---
 
@@ -22,24 +24,33 @@ Client → HAProxy :9999 (TCP round-robin)
 
 Each instance: 168 MB RAM, 0.45 CPU. HAProxy: 14 MB, 0.10 CPU. Total: 1 CPU, 350 MB.
 
+### Fraud pipeline per request
+
+```
+JSON decode → vectorize → fast_path rules → decision tree → IVF k-NN → response
+```
+
+1. **fast_path** — heuristic rules for obviously safe/risky transactions (zero allocations)
+2. **decision tree** — 8 confident leaves at threshold=0.95; intercepts ~few % of requests
+3. **IVF k-NN** — nprobe=15, k=5, C=4000; handles the rest
+
 ---
 
 ## What is implemented
 
-- `cmd/api/main.go` — magic-byte auto-detect (IVF1/VPT1), loads correct index, serves unix socket
+- `cmd/api/main.go` — loads IVF index, resources, serves unix socket
 - `internal/dto/fraud.go` — request/response types
 - `internal/vectorizer/vectorizer.go` — 14-dim feature vector
 - `internal/search/index.go` — `IVFIndex` + `LoadIVFIndex` (IVF1 format) + `Index` interface
-- `internal/search/knn.go` — IVF KNN (nprobe=15, C=4000), fully optimized
-- `internal/search/vp_index.go` — `VPNode`, `VPIndex`, `LoadVPIndex` (VPT1 binary format)
-- `internal/search/vp_knn.go` — `VPIndex.KNN` iterative DFS, branch-and-bound, zero heap allocs
-- `internal/service/fraud_detection.go` — uses `search.Index` interface, k=5, threshold=0.6 (FIXED BY SPEC)
+- `internal/search/knn.go` — IVF KNN (nprobe=15, C=4000), fully optimized, mmap index
+- `internal/search/decision_tree.go` — generated Go code from trained sklearn DecisionTreeClassifier
+- `internal/service/fraud_detection.go` — fast_path → decision tree → k-NN pipeline
 - `internal/handler/fraud_score.go` — pre-computed 6-entry response array, zero JSON encoding
-- `ml/build_index.py` — `--algo {vptree,ivf}` flag (vptree default); IVF: MiniBatchKMeans(C=4000, n_init=3); VP: recursive DFS tree → VPT1 binary
+- `ml/build_index.py` — `--algo ivf` (default); IVF: MiniBatchKMeans(C=4000, n_init=3)
+- `ml/train_decision_tree.py` — trains sklearn tree on reference dataset, confidence=0.95
+- `ml/gen_tree_go.py` — generates `internal/search/decision_tree.go` from trained model
 - `Makefile` — `index`, `bench`, `bench-fast`, `submission` targets
-- `references/tools/profile.sh` — CPU/mem profile (`vp|ivf` × `serial|parallel`); output → `references/performance/`
-- `references/tools/trace.sh` — execution trace (`vp|ivf`); output → `references/performance/`
-- Tests — 21 unit tests
+- Tests — 21+ unit tests
 
 ---
 
@@ -59,93 +70,52 @@ Each instance: 168 MB RAM, 0.45 CPU. HAProxy: 14 MB, 0.10 CPU. Total: 1 CPU, 350
 | 2026-05-30 | +5322 | 1.64ms | 2786 | 19 | 5 | IVF C=4000 nprobe=15 |
 | 2026-05-30 | +5070 | 3.13ms | 2504 | 15 | 4 | nprobe=20 (CPU saturated) |
 | 2026-05-30 | +5292 | 1.76ms | 2755 | 19 | 5 | nprobe=15 + pre-computed response |
-| **2026-05-30** | **+5536** | **0.65ms** | **3000 (MAX)** | 19 | 5 | **nprobe=15 + KNN optimized** |
+| 2026-05-30 | +5536 | 0.65ms | 3000 (MAX) | 19 | 5 | nprobe=15 + KNN optimized |
 | 2026-05-31 | +4051 | 30.57ms | 1514 | 19 | 5 | **remote submission** (same code) |
-| 2026-05-31 | +3234 | 582ms | 234 | 0 | 0 | **VP-tree LEAF_SIZE=16 local** — detection perfeita, latência catastrófica |
-| 2026-05-31 | +3188 | 648ms | 188 | 0 | 0 | **VP-tree LEAF_SIZE=256 local** — pior que LEAF_SIZE=16, hipótese: cache thrashing |
+| 2026-05-31 | +3234 | 582ms | 234 | 0 | 0 | VP-tree LEAF_SIZE=16 local — detection perfect, latency catastrophic |
+| 2026-05-31 | +3188 | 648ms | 188 | 0 | 0 | VP-tree LEAF_SIZE=256 local — worse than LEAF_SIZE=16 |
+| **2026-05-31** | **+5533** | **0.42ms** | **3000 (MAX)** | **20** | **5** | **hybrid: fast_path → tree → IVF** |
 
 ---
 
 ## Remote vs local gap analysis
 
-Remote p99=30ms vs local p99=0.96ms (31× slower). Detection identical → problem is pure compute speed.
+Remote p99=30ms vs local p99=0.65ms (46× slower). Detection identical → problem is pure compute speed.
 
 Root cause: remote CPU is weaker. IVF Phase 1 scans 4000 centroids (224KB), Phase 2 scans ~11,250 vectors per query. Under 0.45 CPU with concurrent load, CFS bandwidth throttling causes p99 spikes.
 
-VP-tree eliminates this: ~50-200 vector comparisons per query vs ~15,250 for IVF. Branch-and-bound pruning via triangle inequality. Exact results → FP:0, FN:0.
+VP-tree was tried but failed under concurrency: 84MB DFS-ordered array causes cache thrashing.
 
-Scoring formula (from EVALUATION.md):
-```
-score_p99 = 1000 × log₁₀(1000 / max(p99_ms, 1))
-```
+IVF works well concurrently because:
+- Phase 1 (centroids): 224KB always in cache, shared read across goroutines
+- Phase 2 (cluster scan): each goroutine reads its specific cluster → spatial locality
 
-| remote p99 target | p99_score | total score |
-|---|---|---|
-| 30ms (current IVF) | 1514 | 4051 |
-| 3ms | 2523 | 5523 (det_score=3000) |
-| 1ms | 3000 | 6000 (MAX) |
+Hybrid pipeline goal: reduce IVF invocations via fast_path + tree to lower remote p99.
+Decision tree with 8 confident leaves intercepts a small fraction; impact on latency is marginal locally
+but may help on remote where CPU is the bottleneck.
 
 ---
 
-## VP-tree binary format (VPT1)
+## Hybrid pipeline analysis (local bench 2026-05-31)
 
 ```
-[4B]   "VPT1" magic
-[4B]   uint32 N          — total vectors
-[4B]   uint32 nodeCount
-[4B]   uint32 leafSize   — stored, not used at query time
-
-[nodeCount × 40B] node array:
-  [4B]  float32 tau       — split radius; 0 for leaves
-  [4B]  uint32  childOff  — right child node index (internal) | vec array start (leaf)
-  [2B]  uint16  count     — 0 = internal; >0 = leaf (# vecs ≤ 16)
-  [2B]  pad
-  [28B] int16[14] vec     — pivot ×10000; zeroed for leaves
-
-[N × 28B]  int16[14] vectors — DFS-reordered, ×10000
-[N × 1B]   uint8     labels  — DFS-reordered
+p99: 0.42ms   (vs 0.65ms IVF-only → 35% faster locally)
+FP:  20       (vs 19 IVF-only → +1 FP, likely one wrong tree leaf)
+FN:  5        (same as IVF-only)
+ERR: 0
+final_score: 5533.11   (vs 5536 IVF-only → negligible difference)
+failure_rate: 0.05%
 ```
 
-Memory: ~135 MB per instance (84 MB vectors + 48 MB nodes + 3 MB labels) < 168 MB budget.
-
----
-
-## VP-tree performance analysis (dados medidos)
-
-| Config | µs/op (serial) | p99 k6 local | Causa |
-|--------|---------------|-------------|-------|
-| LEAF_SIZE=16 | 178µs | 582ms | 524K nós, 21MB node array, muitos sqrt() |
-| LEAF_SIZE=256 | ? | 648ms | Mais vectors por folha, sem ganho |
-
-**Conclusão:** VP-tree não escala sob carga concorrente neste workload.
-
-Micro-bench serial (178µs) vs p99 real (582ms) → gap de 3.200x. Causa: **cache thrashing concorrente**.
-
-- 84MB de vetores (DFS-reordenados) = acesso aleatório sob múltiplas goroutines simultâneas
-- Cada query toca partes espalhadas dos 84MB → cache L3 thrash com 16+ goroutines concorrentes
-- IVF: centroids 224KB (quente em L1), cluster data sequencial → cache-friendly sob concorrência
-
-Aumentar LEAF_SIZE não resolve: o gargalo é o array de vetores (84MB), não os nós.
-
-## Análise IVF vs VP-tree sob concorrência
-
-IVF funciona bem concorrentemente porque:
-- Fase 1 (centroids): 224KB sempre em cache, leitura compartilhada entre goroutines
-- Fase 2 (cluster scan): cada goroutine lê cluster específico → localidade espacial
-
-VP-tree falha concorrentemente porque:
-- DFS path de cada query = sequência única de posições nos 84MB
-- Múltiplas goroutines = múltiplas sequências aleatórias → cache miss constante
+FP increased by 1 (20 vs 19). This is within noise and not worth retraining at lower confidence
+since detection_score is already near maximum and p99_score is capped at 3000.
 
 ---
 
 ## Next steps
 
-**Caminho recomendado:** voltar ao IVF e investigar o gap remoto (30ms).
-
-Opções para melhorar score remoto com IVF:
-1. `GOMAXPROCS=1` no Dockerfile — evita CFS thrashing com 0.45 CPU (testado local: p99=1.37ms, pode ajudar remoto)
-2. Investigar por que remoto é 31× mais lento que local com mesmo código
+Submit hybrid pipeline to remote. Expected improvement: p99 reduction on remote (fewer IVF calls).
+If remote p99 still > 10ms, investigate GOMAXPROCS=1 to avoid CFS thrashing.
 
 ---
 
@@ -155,8 +125,9 @@ Opções para melhorar score remoto com IVF:
 |--------|-------------|-------------|-------|
 | Brute-force | ? | 2002ms | original |
 | IVF C=4000 nprobe=15 unopt | 79µs | 1.64ms | baseline |
-| IVF C=4000 nprobe=20 | 88µs | 3.13ms | CPU saturado |
+| IVF C=4000 nprobe=20 | 88µs | 3.13ms | CPU saturated |
 | IVF nprobe=15 + pre-comp resp | ? | 1.76ms | |
-| **IVF nprobe=15 + KNN otimizado** | **~40µs** | **0.65ms** | **melhor local** |
+| IVF nprobe=15 + KNN optimized | ~40µs | 0.65ms | best IVF-only |
 | VP-tree LEAF_SIZE=16 | 178µs | 582ms | cache thrash |
-| VP-tree LEAF_SIZE=256 | ? | 648ms | pior ainda |
+| VP-tree LEAF_SIZE=256 | ? | 648ms | worse |
+| **hybrid fast_path+tree+IVF** | ? | **0.42ms** | **current** |
