@@ -14,6 +14,9 @@ var (
 // CalculateFraudScore returns fraudCount (0–5): number of fraud neighbors among k=5.
 // k=5 and threshold=0.6 are fixed by spec — do not change.
 func CalculateFraudScore(req dto.FraudRequest) int {
+	if count, ok := fastPath(req); ok {
+		return count
+	}
 	vec := Vec.Vectorize(req)
 	return Idx.KNN(vec, 5)
 }
