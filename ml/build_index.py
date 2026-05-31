@@ -3,13 +3,14 @@ import gzip
 import json
 import struct
 import sys
-import numpy as np
 from pathlib import Path
+
+import numpy as np
 from sklearn.cluster import MiniBatchKMeans
 
 N_CLUSTERS = 4000
 NPROBE_DEFAULT = 20
-LEAF_SIZE = 16
+LEAF_SIZE = 256
 
 
 def build_ivf(vectors, labels, dst):
@@ -34,7 +35,9 @@ def build_ivf(vectors, labels, dst):
     cluster_starts = np.zeros(N_CLUSTERS, dtype=np.uint32)
     cluster_starts[1:] = np.cumsum(cluster_sizes[:-1])
 
-    vectors_int16 = np.clip(np.round(vectors_sorted * 10000), -32768, 32767).astype(np.int16)
+    vectors_int16 = np.clip(np.round(vectors_sorted * 10000), -32768, 32767).astype(
+        np.int16
+    )
 
     print("Writing IVF index...")
     with open(dst, "wb") as out:
@@ -49,7 +52,9 @@ def build_ivf(vectors, labels, dst):
     size_mb = dst.stat().st_size / 1024 / 1024
     print(f"{n} vectors, {N_CLUSTERS} clusters → {dst} ({size_mb:.1f} MB)")
     avg = cluster_sizes.mean()
-    print(f"Avg cluster size: {avg:.0f}, nprobe={NPROBE_DEFAULT} → ~{avg*NPROBE_DEFAULT:.0f} vecs/query")
+    print(
+        f"Avg cluster size: {avg:.0f}, nprobe={NPROBE_DEFAULT} → ~{avg * NPROBE_DEFAULT:.0f} vecs/query"
+    )
 
 
 def build_vptree(vectors, labels, dst):
@@ -89,13 +94,15 @@ def build_vptree(vectors, labels, dst):
             _, indices = tree
             vec_start = len(vec_order)
             vec_order.extend(indices.tolist())
-            nodes.append({
-                "leaf": True,
-                "childOff": vec_start,
-                "count": len(indices),
-                "tau": 0.0,
-                "vec": np.zeros(14, dtype=np.int16),
-            })
+            nodes.append(
+                {
+                    "leaf": True,
+                    "childOff": vec_start,
+                    "count": len(indices),
+                    "tau": 0.0,
+                    "vec": np.zeros(14, dtype=np.int16),
+                }
+            )
             return
 
         _, pivot_idx, tau, left, right = tree
@@ -103,7 +110,9 @@ def build_vptree(vectors, labels, dst):
         nodes.append(None)
         serialize(left)
         right_ni = len(nodes)
-        vec_i16 = np.clip(np.round(vectors[pivot_idx] * 10000), -32768, 32767).astype(np.int16)
+        vec_i16 = np.clip(np.round(vectors[pivot_idx] * 10000), -32768, 32767).astype(
+            np.int16
+        )
         nodes[ni] = {
             "leaf": False,
             "tau": tau,
@@ -162,7 +171,9 @@ def main():
     print(f"Loaded {n} records")
 
     vectors = np.array([rec["vector"] for rec in records], dtype=np.float32)
-    labels = np.array([1 if rec["label"] == "fraud" else 0 for rec in records], dtype=np.uint8)
+    labels = np.array(
+        [1 if rec["label"] == "fraud" else 0 for rec in records], dtype=np.uint8
+    )
 
     if args.algo == "vptree":
         build_vptree(vectors, labels, dst)
