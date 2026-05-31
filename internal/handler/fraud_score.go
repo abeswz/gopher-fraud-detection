@@ -7,8 +7,6 @@ import (
 	"net/http"
 )
 
-// Pre-computed responses for all 6 possible fraudCount values (0–5).
-// Verified against encoding/json output: json.NewEncoder.Encode(FraudResponse{...}).
 var fraudResponses = [6][]byte{
 	[]byte("{\"approved\":true,\"fraud_score\":0}\n"),
 	[]byte("{\"approved\":true,\"fraud_score\":0.2}\n"),
@@ -29,5 +27,5 @@ func FraudScore(w http.ResponseWriter, r *http.Request) {
 	fraudCount := service.CalculateFraudScore(req)
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Write(fraudResponses[fraudCount]) //nolint:errcheck
+	w.Write(fraudResponses[fraudCount])
 }

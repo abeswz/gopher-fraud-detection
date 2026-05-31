@@ -97,7 +97,3 @@ func LoadIVFIndex(path string) (*IVFIndex, error) {
 	}, nil
 }
 
-// Index is the common interface for both IVFIndex and VPIndex.
-type Index interface {
-	KNN(query [14]float32, k int) int
-}
