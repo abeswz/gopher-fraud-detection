@@ -67,3 +67,4 @@ ml/
 
 ## local agent memory
 memory/
+.claude/
