@@ -9,7 +9,10 @@ READY_TIMEOUT  := 300
 	submission
 
 index:
-	uv run --project ml ml/build_index.py
+	uv run --project ml ml/build_index.py --algo ivf
+
+index-vp:
+	uv run --project ml ml/build_index.py --algo vptree
 
 bench-fast:
 	docker compose --compatibility down
