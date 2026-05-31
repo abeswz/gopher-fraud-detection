@@ -117,6 +117,9 @@ func parseIVF(data []byte) error {
 	}
 	c := int(binary.LittleEndian.Uint32(data[4:8]))
 	n := int(binary.LittleEndian.Uint32(data[8:12]))
+	if n == 0 {
+		return fmt.Errorf("index has zero vectors")
+	}
 	centSize := c * dims * 4
 	startsSize := c * 4
 	sizesSize := c * 4
