@@ -92,3 +92,27 @@ func TestFastPath_SafeUnknownMerchant(t *testing.T) {
 		t.Fatal("should not hit safe path for unknown merchant")
 	}
 }
+
+// TestCalculateFraudScore_FastPath verifies obviously safe/risky requests
+// bypass vectorization and k-NN. Uses nil Idx/Vec to prove they're not called.
+func TestCalculateFraudScore_FastPath_NoKNN(t *testing.T) {
+	// Save and nil out globals to prove they are not touched.
+	origIdx := Idx
+	origVec := Vec
+	Idx = nil
+	Vec = nil
+	defer func() { Idx = origIdx; Vec = origVec }()
+
+	req := dto.FraudRequest{
+		Transaction: dto.Transaction{Amount: 80, Installments: 2},
+		Customer:    dto.Customer{AvgAmount: 200, TxCount24h: 3, KnownMerchants: []string{"MERC-01"}},
+		Merchant:    dto.Merchant{ID: "MERC-01", MCC: "5411"},
+		Terminal:    dto.Terminal{KmFromHome: 10},
+	}
+
+	// Should not panic (Idx/Vec are nil), fast path intercepts.
+	count := CalculateFraudScore(req)
+	if count != 0 {
+		t.Errorf("got count=%d, want 0", count)
+	}
+}
