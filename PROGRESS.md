@@ -59,6 +59,7 @@ Each instance: 168 MB RAM, 0.45 CPU. HAProxy: 14 MB, 0.10 CPU. Total: 1 CPU, 350
 | 2026-05-30 | +5292 | 1.76ms | 2755 | 19 | 5 | nprobe=15 + pre-computed response |
 | **2026-05-30** | **+5536** | **0.65ms** | **3000 (MAX)** | 19 | 5 | **nprobe=15 + KNN optimized** |
 | 2026-05-31 | +4051 | 30.57ms | 1514 | 19 | 5 | **remote submission** (same code) |
+| 2026-05-31 | +3234 | 582ms | 234 | 0 | 0 | **VP-tree LEAF_SIZE=16 local** — detection perfeita, latência catastrófica |
 
 ---
 
@@ -106,11 +107,31 @@ Memory: ~135 MB per instance (84 MB vectors + 48 MB nodes + 3 MB labels) < 168 M
 
 ---
 
+## VP-tree performance analysis (LEAF_SIZE=16, 3M vectors)
+
+Micro benchmark: **178µs/query** vs IVF ~40µs → 4.5x slower.
+
+```
+nodes=524287 (2^19-1), depth=19, LEAF_SIZE=16
+VP-tree KNN real index: 178105 ns/op
+```
+
+**Root cause hypotheses (para medir com pprof):**
+1. Curse of dimensionality — 14D → pruning inefficiente → visita muitos nós
+2. sqrt() por nó interno — 524K nós potenciais × sqrt() custo alto
+3. Cache miss — DFS = acesso aleatório vs IVF scan sequencial
+4. Stack [40] mal-dimensionado — overflow → heap alloc por query?
+
+**Próximo:** pprof CPU profile sob carga real para quantificar cada hipótese, depois ajustar LEAF_SIZE.
+
+---
+
 ## Next steps
 
-1. **Rebuild index:** `uv run ml/build_index.py` — produces VPT1 format (~10-20 min on 3M vectors)
-2. **Bench locally:** `make bench`
-3. **Submit:** `make submission`
+1. **Medir com pprof** — `PPROF=1 make bench-fast`, analisar hotspots
+2. **Ajustar LEAF_SIZE** (hipótese: 256+ reduz nós 22x, prune mais eficiente)
+3. **Rebuild index** com LEAF_SIZE ajustado
+4. **Bench + submit**
 
 ---
 
@@ -122,4 +143,5 @@ Memory: ~135 MB per instance (84 MB vectors + 48 MB nodes + 3 MB labels) < 168 M
 | C=4000, nprobe=15, unoptimized | 79μs | IVF baseline |
 | C=4000, nprobe=20, pre-opt | 88μs | too slow under load |
 | **C=4000, nprobe=15, optimized** | **~40μs** | IVF best |
-| **VP-tree (target)** | **~1-5μs** | exact, 50-200 comparisons |
+| VP-tree LEAF_SIZE=16, 3M vecs | **178µs** | árvore profunda, 14D ruins pruning |
+| VP-tree LEAF_SIZE=256+ (estimado) | **~20-50µs** | shallower tree, leaf scan sequencial |
