@@ -5,6 +5,7 @@ import (
 	"gopher-fraud-detection/internal/search"
 	"gopher-fraud-detection/internal/service"
 	"gopher-fraud-detection/internal/vectorizer"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -18,6 +19,17 @@ func envOr(key, def string) string {
 	return def
 }
 
+func readMagic(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	var buf [4]byte
+	_, err = io.ReadFull(f, buf[:])
+	return string(buf[:]), err
+}
+
 func main() {
 	indexPath := envOr("INDEX_PATH", "index/references.bin")
 	normPath := envOr("NORM_PATH", "resources/normalization.json")
@@ -28,15 +40,37 @@ func main() {
 		log.Fatalf("load vectorizer: %v", err)
 	}
 
-	idx, err := search.LoadIVFIndex(indexPath)
+	magic, err := readMagic(indexPath)
 	if err != nil {
-		log.Fatalf("load index: %v", err)
+		log.Fatalf("read index magic: %v", err)
+	}
+
+	var idx search.Index
+	var n int
+
+	switch magic {
+	case "IVF1":
+		ivf, err := search.LoadIVFIndex(indexPath)
+		if err != nil {
+			log.Fatalf("load IVF index: %v", err)
+		}
+		idx = ivf
+		n = ivf.N
+	case "VPT1":
+		vp, err := search.LoadVPIndex(indexPath)
+		if err != nil {
+			log.Fatalf("load VP index: %v", err)
+		}
+		idx = vp
+		n = len(vp.Labels)
+	default:
+		log.Fatalf("unknown index format: %q (want IVF1 or VPT1)", magic)
 	}
 
 	service.Vec = vec
 	service.Idx = idx
 
-	log.Printf("loaded %d vectors", idx.N)
+	log.Printf("loaded %d vectors (format: %s)", n, magic)
 
 	sock := envOr("SOCK", "")
 	if sock == "" {
