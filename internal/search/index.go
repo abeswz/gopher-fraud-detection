@@ -5,12 +5,15 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"syscall"
+	"unsafe"
 )
 
 const ivfMagic = "IVF1"
 const dims = 14
 
 // IVFIndex stores vectors grouped by cluster for fast approximate KNN.
+// Vectors and Labels are zero-copy views into mmap'd file data.
 // Binary format (little-endian):
 //
 //	[4]       "IVF1" magic
@@ -29,34 +32,42 @@ type IVFIndex struct {
 	Sizes     []uint32
 	Vectors   []int16
 	Labels    []uint8
+	mmap      []byte // retains reference to prevent GC of mmap'd region
+}
+
+// Close unmaps the index file. Call at process shutdown.
+func (idx *IVFIndex) Close() {
+	if idx.mmap != nil {
+		_ = syscall.Munmap(idx.mmap)
+		idx.mmap = nil
+	}
 }
 
 func LoadIVFIndex(path string) (*IVFIndex, error) {
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
+	defer f.Close()
 
-	if len(data) < 12 {
-		return nil, fmt.Errorf("index too small: %d bytes", len(data))
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	size := int(fi.Size())
+
+	data, err := syscall.Mmap(int(f.Fd()), 0, size, syscall.PROT_READ, syscall.MAP_SHARED)
+	if err != nil {
+		return nil, fmt.Errorf("mmap %s: %w", path, err)
 	}
 
-	if string(data[0:4]) != ivfMagic {
-		return nil, fmt.Errorf("bad magic: %q (want %q)", data[0:4], ivfMagic)
+	if err := parseIVF(data); err != nil {
+		_ = syscall.Munmap(data)
+		return nil, err
 	}
 
 	c := int(binary.LittleEndian.Uint32(data[4:8]))
 	n := int(binary.LittleEndian.Uint32(data[8:12]))
-
-	centSize := c * dims * 4
-	startsSize := c * 4
-	sizesSize := c * 4
-	vecsSize := n * dims * 2
-	labelsSize := n
-	expected := 12 + centSize + startsSize + sizesSize + vecsSize + labelsSize
-	if len(data) != expected {
-		return nil, fmt.Errorf("size mismatch: got %d, want %d", len(data), expected)
-	}
 
 	off := 12
 
@@ -78,14 +89,13 @@ func LoadIVFIndex(path string) (*IVFIndex, error) {
 		off += 4
 	}
 
-	vectors := make([]int16, n*dims)
-	for i := range vectors {
-		vectors[i] = int16(binary.LittleEndian.Uint16(data[off:]))
-		off += 2
-	}
+	// Zero-copy: reinterpret mmap bytes as []int16 and []uint8.
+	// Safe on little-endian (x86/x86-64): file is LE, host is LE.
+	vecBytes := data[off : off+n*dims*2]
+	labelsBytes := data[off+n*dims*2 : off+n*dims*2+n]
 
-	labels := make([]uint8, n)
-	copy(labels, data[off:off+n])
+	vectors := unsafe.Slice((*int16)(unsafe.Pointer(&vecBytes[0])), n*dims)
+	labels := labelsBytes
 
 	return &IVFIndex{
 		C: c, N: n,
@@ -94,7 +104,28 @@ func LoadIVFIndex(path string) (*IVFIndex, error) {
 		Sizes:     sizes,
 		Vectors:   vectors,
 		Labels:    labels,
+		mmap:      data,
 	}, nil
+}
+
+func parseIVF(data []byte) error {
+	if len(data) < 12 {
+		return fmt.Errorf("index too small: %d bytes", len(data))
+	}
+	if string(data[0:4]) != ivfMagic {
+		return fmt.Errorf("bad magic: %q (want %q)", data[0:4], ivfMagic)
+	}
+	c := int(binary.LittleEndian.Uint32(data[4:8]))
+	n := int(binary.LittleEndian.Uint32(data[8:12]))
+	centSize := c * dims * 4
+	startsSize := c * 4
+	sizesSize := c * 4
+	vecsSize := n * dims * 2
+	expected := 12 + centSize + startsSize + sizesSize + vecsSize + n
+	if len(data) != expected {
+		return fmt.Errorf("size mismatch: got %d, want %d", len(data), expected)
+	}
+	return nil
 }
 
 // Index is the common interface for both IVFIndex and VPIndex.
