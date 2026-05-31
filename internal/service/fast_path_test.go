@@ -79,3 +79,16 @@ func TestFastPath_SafeHighAmountVsAvg(t *testing.T) {
 		t.Fatal("should not hit safe path when amount > 50%% of avg_amount")
 	}
 }
+
+func TestFastPath_SafeUnknownMerchant(t *testing.T) {
+	req := dto.FraudRequest{
+		Transaction: dto.Transaction{Amount: 80, Installments: 2},
+		Customer:    dto.Customer{AvgAmount: 200, TxCount24h: 3, KnownMerchants: []string{"MERC-01"}},
+		Merchant:    dto.Merchant{ID: "MERC-99", MCC: "5411"}, // unknown merchant
+		Terminal:    dto.Terminal{KmFromHome: 10},
+	}
+	_, ok := fastPath(req)
+	if ok {
+		t.Fatal("should not hit safe path for unknown merchant")
+	}
+}
