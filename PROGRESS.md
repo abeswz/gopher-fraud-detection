@@ -4,7 +4,7 @@
 
 ## Status
 
-Score **+5322 / +6000**. IVF optimized (C=4000, nprobe=15). Two gaps remain: detection (-463 pts) and latency (-214 pts).
+Score **+5536 / +6000**. p99_score **maxed at 3000** (p99=0.65ms ≤ 1ms ceiling). Only gap: detection (-463 pts, FP:19 FN:5).
 
 ---
 
@@ -22,111 +22,115 @@ Each instance: 168 MB RAM, 0.45 CPU. HAProxy: 14 MB, 0.10 CPU. Total: 1 CPU, 350
 
 ## What is implemented
 
-- `cmd/api/main.go` — loads IVF index + vectorizer, serves unix socket, `os.Chmod(sock, 0666)` for HAProxy (UID 99)
+- `cmd/api/main.go` — loads IVF index + vectorizer, serves unix socket, `os.Chmod(sock, 0666)` for HAProxy (UID 99). pprof server on `PPROF_ADDR` env var (**remove before submission**).
 - `internal/dto/fraud.go` — request/response types
-- `internal/vectorizer/vectorizer.go` — 14-dim feature vector (normalization, MCC risk, weekday `(int(wd)+6)%7`, sentinel -1.0 for null last_transaction)
+- `internal/vectorizer/vectorizer.go` — 14-dim feature vector
 - `internal/search/index.go` — `IVFIndex` + `LoadIVFIndex` (IVF1 binary format)
-- `internal/search/knn.go` — IVF KNN (nprobe=15, C=4000 clusters)
-- `internal/service/fraud_detection.go` — wires vectorizer + IVF KNN
-- `internal/handler/` + `internal/router/` — thin HTTP handlers
-- `ml/build_index.py` — MiniBatchKMeans(C=4000) on 3M vectors → IVF binary
-- `ml/pyproject.toml` — numpy + scikit-learn
-- `Dockerfile` — distroless/static-debian12, copies index/ + resources/
-- `docker-compose.yml` — two API instances + HAProxy
-- `haproxy.cfg` — TCP round-robin over unix sockets
-- `Makefile` — `index`, `bench`, `submission` targets
-- Tests — 12 unit tests covering vectorizer, search, service
+- `internal/search/knn.go` — IVF KNN (nprobe=15, C=4000). Optimized: unrolled 14-dim loops, `*invScale` instead of `/10000.0`, incremental base pointer, bounds-check hints, partial distance early exit at dim 0 and dim 7.
+- `internal/service/fraud_detection.go` — returns fraudCount int. k=5, threshold=0.6 (FIXED BY SPEC).
+- `internal/handler/fraud_score.go` — pre-computed 6-entry response array, zero JSON encoding per request.
+- `ml/build_index.py` — MiniBatchKMeans(C=4000, n_init=3) on 3M vectors → IVF binary
+- `Makefile` — `index`, `bench`, `bench-fast` (skip index rebuild), `submission` targets
+- Tests — 12 unit tests
 
 ---
 
-## KNN performance (Go microbenchmark, real 3M index)
+## Fixed constraints (spec — never change)
 
-| Config | μs/op | Vectors/query | Change |
-|---|---|---|---|
-| C=2000, nprobe=20 (baseline) | 124μs | 30,000 | — |
-| C=4000, nprobe=20 | 88μs | 15,000 | -29% |
-| C=4000, nprobe=15 | **79μs** | 11,250 | -36% total |
+- `k=5`: test labels generated with exact brute-force k=5. Changing k diverges from ground truth → more FP/FN.
+- `threshold=0.6`: explicitly fixed in `DETECTION_RULES.md`.
+- `fraud_score = fraudCount / 5.0`: always divides by 5.
 
-**Bottleneck confirmed:** memory-bound, not compute-bound. pprof shows 2.84s stalled on `idx.Vectors` loads. Integer arithmetic path tested (eliminates float conversion) → neutral result, reverted.
-
-**Why C=4000 is the sweet spot:** centroid table at C=4000 = 224KB → fits in L2 cache (256KB). At C=8000 = 448KB → overflows L2, phase-1 centroid scan regressed to 101μs.
+FP/FN come from IVF approximation error (nprobe misses true top-5 brute-force neighbors). Only levers: increase nprobe, or improve index cluster quality.
 
 ---
 
-## History
+## KNN performance
 
-| Date | Event |
-|------|-------|
-| 2026-05-30 | Full implementation via subagent-driven development |
-| 2026-05-30 | Bug: HAProxy (UID 99) couldn't connect to unix socket (perms 0755). Fix: `os.Chmod(sock, 0666)` in main.go |
-| 2026-05-30 | `make bench` showed 99% HTTP errors, p99=2002ms, score=-6000 |
-| 2026-05-30 | Root cause: brute-force KNN over 3M vectors = ~40ms/req at 0.45 CPU → max ~11 req/s |
-| 2026-05-30 | Fix: replaced brute-force with IVF (C=2000, nprobe=20) → ~150x speedup |
-| 2026-05-30 | Perf investigation: profiled with pprof, confirmed memory-bound |
-| 2026-05-30 | Tuned C=4000 (L2 cache sweet spot) + nprobe=15 → 79μs/op (-36% vs original IVF) |
-
----
-
-## Last bench result
-
-```
-p99:1.64ms  score:+5322  FP:19  FN:5  ERR:0
-```
-
-C=4000, nprobe=15. KNN microbenchmark: 79μs/op. Full request p99: 1.64ms → 1.56ms spent outside KNN (JSON, vectorizer, socket, HAProxy).
-
----
-
-## Plan — reaching +6000
-
-### Gap breakdown
-
-| Gap | Points lost | Max recoverable |
+| Config | μs/op | Notes |
 |---|---|---|
-| Detection errors (19 FP + 5 FN) | -463 | +463 |
-| Latency p99=1.64ms vs ≤1ms | -214 | +214 |
+| C=2000, nprobe=20, brute inner | 124μs | original |
+| C=4000, nprobe=15, unoptimized | 79μs | IVF baseline |
+| C=4000, nprobe=20, pre-opt | 88μs | too slow under load |
+| **C=4000, nprobe=15, optimized** | **~40μs est.** | unroll + invScale + early exit |
 
-### Step 1 — tune threshold and k (no index rebuild, low risk)
+**Memory sweet spot:** C=4000 → centroid table 224KB fits L2 (256KB). C=8000 overflows L2 → 101μs.
 
-**Why:** 19 FP weight 1 each, 5 FN weight 3 each = 34 weighted errors. FN costs 3× more, so reducing FN is priority. Different k or threshold can shift this balance.
+---
 
-**What to test:**
-- `k=7` (currently 5) — more voters → more robust majority, likely fewer FN
-- `threshold=0.5` (currently 0.6) — harder to approve → fewer FN, likely more FP
-- `threshold=0.7` — easier to approve → fewer FP, likely more FN
+## KNN optimizations applied (knn.go)
 
-**How:** change constants in `service/fraud_detection.go`, run `make bench` (no index rebuild needed — skip `make index` by running docker steps directly), compare FP/FN/score.
+1. **`/ 10000.0` → `* invScale`** — multiply ~4× faster than divide; 14 ops × 11K vectors = meaningful
+2. **Unrolled 14-dim loop** — eliminates loop overhead + branch prediction misses in inner hot path
+3. **Incremental `base += dims`** — replaces `i * dims` multiply per vector
+4. **Bounds-check hint `_ = slice[base+13]`** — tells compiler all 14 accesses are in-bounds; elides 13 checks per vector
+5. **Partial distance early exit (dim 0 + dim 7)** — once heap full (k=5), most vectors are farther than `maxDist`; skipped after 1 dimension instead of 14
+6. **Query locals `q0..q13`** — extract to stack before loops; avoids repeated bounds checks on `query[14]`
 
-**Constraint:** `make bench` always runs `index` (4 min rebuild). Workaround: run docker+k6 steps manually to iterate faster.
+---
 
-### Step 2 — profile full HTTP request path
+## CPU profile evolution (30s under k6 load)
 
-**Why:** KNN=79μs but p99=1.64ms → 1.56ms unaccounted. Closing the latency gap to <1ms requires knowing where that time goes.
+| Profile | Config | Total samples | KNN% | KNN flat |
+|---|---|---|---|---|
+| 001 | nprobe=15, original | 1.32s | 87% | 1.15s |
+| 003 | nprobe=15, pre-computed resp | 1.09s | 83% | 0.90s |
+| **005** | **nprobe=15, KNN optimized** | **670ms** | **73%** | **490ms** |
 
-**What to do:** add `net/http/pprof` endpoint to the API (behind a build tag or env var), run `make bench`, capture CPU profile under real load with `go tool pprof http://localhost:PORT/debug/pprof/profile?seconds=30`.
+**-41% total CPU, -57% KNN flat time** vs profile 001.
 
-**Candidates for hidden latency:**
-- `encoding/json` Unmarshal/Marshal (reflection-based, slow)
-- `time.Parse` inside vectorizer for `requested_at`
-- GC pressure from per-request allocations (slice growth in KNN, JSON decode)
-- HAProxy → unix socket round-trip overhead
-
-### Step 3 — reduce allocations in hot path (after profiling confirms)
-
-**Likely fixes based on common Go patterns:**
-- Pre-allocate `topC` and `top` slices outside KNN, pass as args (avoids `make` per request)
-- Replace `encoding/json` with `github.com/bytedance/sonic` or hand-rolled decoder for the known-schema request
-- Reuse `[14]float32` query vector (already on stack — fine)
-
-### Step 4 — nprobe tuning (after detection is solved)
-
-nprobe=15 may miss some real neighbors in clusters 16-20 → contributes to FP/FN. Test nprobe=18 after detection is improved to see if recall gains outweigh latency cost (~15μs more).
+Profile 005 new signals:
+- `centFindMax` 2.99% — linear scan of np=15 entries, called ~4K times per query
+- `runtime.nextFreeFast` 2.99% — `make([]centEntry)` + `make([]knnEntry)` still allocating
+- `bufio.Flush` 5.97% — HTTP response write, architectural
 
 ---
 
 ## Score history
 
-| Date | Score | p99 | FP | FN | ERR | Config |
+| Date | Score | p99 | p99_score | FP | FN | Config |
 |---|---|---|---|---|---|---|
-| 2026-05-30 | -6000 | 2002ms | 0 | 0 | 13712 | brute-force KNN |
-| 2026-05-30 | **+5322** | **1.64ms** | 19 | 5 | 0 | IVF C=4000 nprobe=15 |
+| 2026-05-30 | -6000 | 2002ms | -3000 | 0 | 0 | brute-force KNN |
+| 2026-05-30 | +5322 | 1.64ms | 2786 | 19 | 5 | IVF C=4000 nprobe=15 |
+| 2026-05-30 | +5070 | 3.13ms | 2504 | 15 | 4 | nprobe=20 (pre-opt, CPU saturated) |
+| 2026-05-30 | +5292 | 1.76ms | 2755 | 19 | 5 | nprobe=15 + pre-computed response |
+| **2026-05-30** | **+5536** | **0.65ms** | **3000 (MAX)** | 19 | 5 | **nprobe=15 + KNN optimized** |
+
+---
+
+## Remaining gap
+
+Only detection: **-463 pts** (FP:19 × 1pt + FN:5 × 3pt = 34 weighted errors).
+
+Detection score at zero errors = 3000. Current det_score = 2536. Gap = 464 pts.
+
+---
+
+## Plan — closing the detection gap
+
+### Option A — nprobe=20 (re-test, NOW viable)
+
+KNN is 41% faster. Previously nprobe=20 caused p99=3.13ms (CPU saturated). With optimized KNN, nprobe=20 should be affordable.
+- Expected: FP:15, FN:4 (confirmed from pre-optimization nprobe=20 test)
+- Risk: p99 may still cross 1ms ceiling → p99_score drops from 3000
+- Test first: change `nprobe = 15` → `nprobe = 20` in `knn.go`, run `make bench-fast`
+
+### Option B — improve index cluster quality
+
+Current: `MiniBatchKMeans(n_init=3, batch_size=100_000)` — fast but suboptimal clusters.
+Better clusters → true brute-force top-5 neighbors concentrated in fewer clusters → better recall at same nprobe.
+
+Change: `n_init=3 → n_init=10`, `batch_size=100_000 → 200_000`
+- Rebuild time: ~12-15 min (vs ~4 min current)
+- Expected: fewer FP/FN at same nprobe, no latency cost
+- Run: `make index` (then `make bench-fast`)
+
+### Option C — nprobe=20 + better index
+
+Combine A + B: better clusters mean nprobe=20 recovers more true neighbors without CPU cost of scanning many false-positive cluster members.
+
+### Before submission
+
+Remove pprof from:
+1. `cmd/api/main.go`: `_ "net/http/pprof"` import + `PPROF_ADDR` goroutine block
+2. `docker-compose.yml`: `PPROF_ADDR=:6060` env + `ports: - "6060:6060"` from api1

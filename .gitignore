@@ -64,3 +64,6 @@ test/
 
 index/
 ml/
+
+## local agent memory
+memory/

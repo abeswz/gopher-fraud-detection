@@ -76,6 +76,13 @@ Full spec in `references/rules/DETECTION_RULES.md`. Summary:
 - Indices 5 and 6 use `-1.0` sentinel when `last_transaction` is `null`
 - KNN with k=5, Euclidean distance, threshold 0.6
 
+> **FIXED BY SPEC — DO NOT CHANGE:**
+> - `k=5` is mandatory. Test labels were generated with exact brute-force k=5. Changing k changes the decision boundary and diverges from labeled ground truth → more FP/FN.
+> - `threshold=0.6` is mandatory. Explicitly stated as fixed in `DETECTION_RULES.md`.
+> - `fraud_score = fraudCount / 5.0` always divides by 5, never by k.
+>
+> FP/FN come from IVF approximation error (nprobe misses true top-5 neighbors). Fix: increase nprobe, not k or threshold.
+
 ---
 
 ## Scoring

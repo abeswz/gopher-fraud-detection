@@ -11,12 +11,9 @@ var (
 	Vec *vectorizer.Vectorizer
 )
 
-func CalculateFraudScore(req dto.FraudRequest) dto.FraudResponse {
+// CalculateFraudScore returns fraudCount (0–5): number of fraud neighbors among k=5.
+// k=5 and threshold=0.6 are fixed by spec — do not change.
+func CalculateFraudScore(req dto.FraudRequest) int {
 	vec := Vec.Vectorize(req)
-	fraudCount := Idx.KNN(vec, 5)
-	fraudScore := float64(fraudCount) / 5.0
-	return dto.FraudResponse{
-		Approved:   fraudScore < 0.6,
-		FraudScore: fraudScore,
-	}
+	return Idx.KNN(vec, 5)
 }
