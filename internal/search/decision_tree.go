@@ -14,7 +14,7 @@ var dtClass = [2069]int8{-1, -1, 0, -1, -1, -1, 0, 1, -1, -1, 0, 0, 0, -1, -1, 0
 // Returns (fraudCount, true) only when the reached leaf is confident
 // (majority class >= confidence threshold during training).
 // Returns (0, false) for uncertain leaves — caller should fall through to k-NN.
-func DecisionTree(vec [14]float32) (int, bool) {
+func DecisionTree(vec [16]float32) (int, bool) {
 	node := int32(0)
 	for dtLeft[node] != -1 {
 		if vec[dtFeature[node]] <= dtThreshold[node] {

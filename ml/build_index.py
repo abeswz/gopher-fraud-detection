@@ -12,6 +12,11 @@ NPROBE_DEFAULT = 20
 
 def build_ivf(vectors, labels, dst):
     n = len(labels)
+    # Pad from 14 to 16 dims
+    vectors_16 = np.zeros((n, 16), dtype=np.float32)
+    vectors_16[:, :14] = vectors
+    vectors = vectors_16
+
     print(f"Fitting MiniBatchKMeans with {N_CLUSTERS} clusters...")
     km = MiniBatchKMeans(
         n_clusters=N_CLUSTERS,
@@ -21,7 +26,7 @@ def build_ivf(vectors, labels, dst):
         verbose=0,
     )
     assignments = km.fit_predict(vectors)
-    centroids = km.cluster_centers_.astype(np.float32)
+    centroids = km.cluster_centers_.astype(np.float32)  # shape: (C, 16)
     print(f"K-means done. Centroids: {centroids.shape}")
 
     sort_idx = np.argsort(assignments, kind="stable")
@@ -36,14 +41,14 @@ def build_ivf(vectors, labels, dst):
         np.int16
     )
 
-    print("Writing IVF index...")
+    print("Writing IVF2 index...")
     with open(dst, "wb") as out:
-        out.write(b"IVF1")
+        out.write(b"IVF2")                                  # ← changed
         out.write(struct.pack("<II", N_CLUSTERS, n))
-        out.write(centroids.astype("<f4").tobytes())
+        out.write(centroids.astype("<f4").tobytes())        # 16-dim centroids
         out.write(cluster_starts.astype("<u4").tobytes())
         out.write(cluster_sizes.astype("<u4").tobytes())
-        out.write(vectors_int16.astype("<i2").tobytes())
+        out.write(vectors_int16.astype("<i2").tobytes())    # 16-dim int16 vecs
         out.write(labels_sorted.astype("u1").tobytes())
 
     size_mb = dst.stat().st_size / 1024 / 1024

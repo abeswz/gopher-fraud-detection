@@ -7,7 +7,7 @@ import (
 func TestDecisionTree_UncertainLeaf(t *testing.T) {
 	// Zero vector — guaranteed to reach a leaf; with only 8 confident leaves
 	// out of 2069 nodes, almost all paths hit uncertain leaves.
-	var vec [14]float32
+	var vec [16]float32
 	_, ok := DecisionTree(vec)
 	// We don't assert the class — just that the function runs without panic
 	// and the zero vec (which represents an invalid/edge-case transaction)
@@ -21,12 +21,12 @@ func TestDecisionTree_ReturnsValidFraudCount(t *testing.T) {
 	// - count must be 0 when ok=false
 	tests := []struct {
 		name string
-		vec  [14]float32
+		vec  [16]float32
 	}{
-		{"zero vector", [14]float32{}},
-		{"all ones", [14]float32{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}},
-		{"mid values", [14]float32{0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5}},
-		{"max legit sentinel", [14]float32{0, 0, 0, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0, 0}},
+		{"zero vector", [16]float32{}},
+		{"all ones", [16]float32{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}},
+		{"mid values", [16]float32{0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5}},
+		{"max legit sentinel", [16]float32{0, 0, 0, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0, 0}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
