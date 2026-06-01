@@ -110,36 +110,17 @@ func (idx *IVFIndex) KNN(query [16]float32, k int) int {
 		base := start * dims
 
 		for vi := start; vi < start+size; vi, base = vi+1, base+dims {
-			_ = vecs[base+15] // elide 15 bounds checks
+			// Bounds hint: ensures base+15 is in-bounds (elides runtime check in distL2i16_16)
+			_ = vecs[base+15]
 
+			// Early exit at dim 0 before the AVX2 call
 			d0 := q0 - float32(vecs[base])*invScale
-			dist := d0 * d0
-			if len(top) == k && dist >= maxDist {
+			partialDist := d0 * d0
+			if len(top) == k && partialDist >= maxDist {
 				continue
 			}
 
-			d1 := q1 - float32(vecs[base+1])*invScale
-			d2 := q2 - float32(vecs[base+2])*invScale
-			d3 := q3 - float32(vecs[base+3])*invScale
-			d4 := q4 - float32(vecs[base+4])*invScale
-			d5 := q5 - float32(vecs[base+5])*invScale
-			d6 := q6 - float32(vecs[base+6])*invScale
-			d7 := q7 - float32(vecs[base+7])*invScale
-			dist += d1*d1 + d2*d2 + d3*d3 + d4*d4 + d5*d5 + d6*d6 + d7*d7
-			if len(top) == k && dist >= maxDist {
-				continue
-			}
-
-			d8 := q8 - float32(vecs[base+8])*invScale
-			d9 := q9 - float32(vecs[base+9])*invScale
-			d10 := q10 - float32(vecs[base+10])*invScale
-			d11 := q11 - float32(vecs[base+11])*invScale
-			d12 := q12 - float32(vecs[base+12])*invScale
-			d13 := q13 - float32(vecs[base+13])*invScale
-			d14 := q14 - float32(vecs[base+14])*invScale
-			d15 := q15 - float32(vecs[base+15])*invScale
-			dist += d8*d8 + d9*d9 + d10*d10 + d11*d11 + d12*d12 + d13*d13 +
-				d14*d14 + d15*d15
+			dist := distL2i16_16(vecs, base, &query)
 
 			if len(top) < k {
 				top = append(top, knnEntry{dist, labs[vi]})
