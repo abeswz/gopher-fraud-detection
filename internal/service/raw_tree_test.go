@@ -176,3 +176,15 @@ func TestRawTreePredict_ReturnsValidFraudCount(t *testing.T) {
 		})
 	}
 }
+
+func TestCalculateFraudScore_PipelineSmoke(t *testing.T) {
+	if Idx == nil || Vec == nil {
+		t.Skip("service globals not initialized")
+	}
+
+	req := makeTestRequest(100.0, 200.0, 50.0, 1, 1, 5.0, "5411", false, true, true, -1, -1)
+	count := CalculateFraudScore(req)
+	if count < 0 || count > 5 {
+		t.Errorf("CalculateFraudScore: got %d, want 0–5", count)
+	}
+}
