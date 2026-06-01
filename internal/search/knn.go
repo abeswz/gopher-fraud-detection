@@ -1,7 +1,7 @@
 package search
 
 const (
-	nprobe   = 15
+	nprobe   = 128
 	invScale = float32(1.0 / 10000.0) // multiply is cheaper than divide
 )
 
@@ -26,10 +26,7 @@ type centEntry struct {
 //   - Partial distance early exit at dim 0 (skip clearly-distant vectors before AVX2 call)
 //   - Query values extracted to locals (avoid repeated array indexing)
 func (idx *IVFIndex) KNN(query [16]float32, k int) int {
-	np := nprobe
-	if np > idx.C {
-		np = idx.C
-	}
+	np := min(nprobe, idx.C)
 
 	// Extract query to locals — avoids repeated bounds checks on the array.
 	q0 := query[0]
