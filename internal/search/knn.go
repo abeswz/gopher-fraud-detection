@@ -23,7 +23,7 @@ type centEntry struct {
 //   - Incremental base pointer (eliminates i*dims multiply per vector)
 //   - invScale multiply instead of /10000.0 (multiply ~4x faster than divide)
 //   - Bounds-check hints _ = slice[base+15] (elides 15 redundant checks per vector)
-//   - Partial distance early exit at dim 0 and dim 7 (skip clearly-distant vectors)
+//   - Partial distance early exit at dim 0 (skip clearly-distant vectors before AVX2 call)
 //   - Query values extracted to locals (avoid repeated array indexing)
 func (idx *IVFIndex) KNN(query [16]float32, k int) int {
 	np := nprobe
@@ -103,7 +103,7 @@ func (idx *IVFIndex) KNN(query [16]float32, k int) int {
 	// Partial distance early exit: once the heap is full (k entries), any vector
 	// whose partial distance already exceeds maxDist can be skipped — partial ≤ full,
 	// so full ≥ partial ≥ maxDist means it cannot enter the top-k.
-	// Checks at dim 0 and dim 7 skip most non-candidates with minimal overhead.
+	// Check at dim 0 skips most non-candidates before the AVX2 distL2i16_16 call.
 	for _, ce := range topC {
 		start := int(idx.Starts[ce.id])
 		size := int(idx.Sizes[ce.id])
