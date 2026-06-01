@@ -26,7 +26,7 @@ func approxEqual(a, b float32, tol float64) bool {
 	return math.Abs(float64(a-b)) <= tol
 }
 
-func checkVec(t *testing.T, got [14]float32, want [14]float32) {
+func checkVec(t *testing.T, got [16]float32, want [14]float32) {
 	t.Helper()
 	for i := range want {
 		if !approxEqual(got[i], want[i], 1e-3) {

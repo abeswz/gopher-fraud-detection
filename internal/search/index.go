@@ -9,20 +9,20 @@ import (
 	"unsafe"
 )
 
-const ivfMagic = "IVF1"
-const dims = 14
+const ivfMagic = "IVF2"
+const dims = 16
 
 // IVFIndex stores vectors grouped by cluster for fast approximate KNN.
 // Vectors and Labels are zero-copy views into mmap'd file data.
 // Binary format (little-endian):
 //
-//	[4]       "IVF1" magic
+//	[4]       "IVF2" magic
 //	[4]       uint32 C (number of clusters)
 //	[4]       uint32 N (total vectors)
-//	[C×14×4]  float32 centroids
+//	[C×16×4]  float32 centroids
 //	[C×4]     uint32 cluster starts (index into Vectors/Labels)
 //	[C×4]     uint32 cluster sizes
-//	[N×14×2]  int16 vectors (all vectors contiguous, not interleaved with labels)
+//	[N×16×2]  int16 vectors (all vectors contiguous, not interleaved with labels)
 //	[N×1]     uint8 labels
 type IVFIndex struct {
 	C         int
@@ -133,5 +133,5 @@ func parseIVF(data []byte) error {
 
 // Index is the common interface for both IVFIndex and VPIndex.
 type Index interface {
-	KNN(query [14]float32, k int) int
+	KNN(query [16]float32, k int) int
 }

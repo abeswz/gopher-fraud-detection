@@ -25,7 +25,7 @@ func BenchmarkKNN_RealIndex(b *testing.B) {
 		idx.C, idx.N, float64(idx.N)/float64(idx.C), nprobe,
 		float64(idx.N)/float64(idx.C)*nprobe)
 
-	query := [14]float32{0.7, 0.3, 0.5, 0.9, 0.1, -1.0, -1.0, 0.4, 0.6, 0.8, 0.2, 0.55, 0.45, 0.65}
+	query := [16]float32{0.7, 0.3, 0.5, 0.9, 0.1, -1.0, -1.0, 0.4, 0.6, 0.8, 0.2, 0.55, 0.45, 0.65}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		idx.KNN(query, 5)
@@ -43,7 +43,7 @@ func BenchmarkKNN_RealIndex_Parallel(b *testing.B) {
 	}
 	b.Logf("C=%d N=%d GOMAXPROCS=%d", idx.C, idx.N, runtime.GOMAXPROCS(0))
 
-	queries := [8][14]float32{
+	queries := [8][16]float32{
 		{0.7, 0.3, 0.5, 0.9, 0.1, -1.0, -1.0, 0.4, 0.6, 0.8, 0.2, 0.55, 0.45, 0.65},
 		{0.2, 0.8, 0.1, 0.3, 0.9, 0.5, 0.7, 0.6, 0.4, 0.1, 0.9, 0.3, 0.7, 0.5},
 		{0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5},

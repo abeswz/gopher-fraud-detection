@@ -33,14 +33,14 @@ func TestLoadIVFIndex_Basic(t *testing.T) {
 	idx := &IVFIndex{
 		C:         1,
 		N:         2,
-		Centroids: make([]float32, 14),
+		Centroids: make([]float32, 16),
 		Starts:    []uint32{0},
 		Sizes:     []uint32{2},
-		Vectors:   make([]int16, 2*14),
+		Vectors:   make([]int16, 2*16),
 		Labels:    []uint8{0, 1},
 	}
-	for j := 0; j < 14; j++ {
-		idx.Vectors[14+j] = 10000
+	for j := 0; j < 16; j++ {
+		idx.Vectors[16+j] = 10000
 	}
 
 	tmp := t.TempDir() + "/test.bin"
@@ -64,20 +64,20 @@ func TestLoadIVFIndex_Basic(t *testing.T) {
 	if got.Vectors[0] != 0 {
 		t.Errorf("Vectors[0]: got %d, want 0", got.Vectors[0])
 	}
-	if got.Vectors[14] != 10000 {
-		t.Errorf("Vectors[14]: got %d, want 10000", got.Vectors[14])
+	if got.Vectors[16] != 10000 {
+		t.Errorf("Vectors[16]: got %d, want 10000", got.Vectors[16])
 	}
 }
 
 func TestLoadIVFIndex_SentinelMinus1(t *testing.T) {
-	vecs := make([]int16, 14)
+	vecs := make([]int16, 16)
 	vecs[5] = -10000
 	vecs[6] = -10000
 
 	idx := &IVFIndex{
 		C:         1,
 		N:         1,
-		Centroids: make([]float32, 14),
+		Centroids: make([]float32, 16),
 		Starts:    []uint32{0},
 		Sizes:     []uint32{1},
 		Vectors:   vecs,

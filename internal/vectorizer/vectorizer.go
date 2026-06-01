@@ -55,8 +55,8 @@ func clamp(x float32) float32 {
 	return x
 }
 
-func (v *Vectorizer) Vectorize(req dto.FraudRequest) [14]float32 {
-	var vec [14]float32
+func (v *Vectorizer) Vectorize(req dto.FraudRequest) [16]float32 {
+	var vec [16]float32 // positions 14,15 = 0.0
 	n := v.Norm
 
 	vec[0] = clamp(float32(req.Transaction.Amount) / n.MaxAmount)

@@ -19,13 +19,13 @@ type centEntry struct {
 // nearest clusters, then returns the count of fraud labels among the top-k.
 //
 // Optimizations vs naive implementation:
-//   - Inner loops unrolled for dims=14 (eliminates loop overhead)
+//   - Inner loops unrolled for dims=16 (eliminates loop overhead)
 //   - Incremental base pointer (eliminates i*dims multiply per vector)
 //   - invScale multiply instead of /10000.0 (multiply ~4x faster than divide)
-//   - Bounds-check hints _ = slice[base+13] (elides 13 redundant checks per vector)
+//   - Bounds-check hints _ = slice[base+15] (elides 15 redundant checks per vector)
 //   - Partial distance early exit at dim 0 and dim 7 (skip clearly-distant vectors)
 //   - Query values extracted to locals (avoid repeated array indexing)
-func (idx *IVFIndex) KNN(query [14]float32, k int) int {
+func (idx *IVFIndex) KNN(query [16]float32, k int) int {
 	np := nprobe
 	if np > idx.C {
 		np = idx.C
@@ -46,6 +46,8 @@ func (idx *IVFIndex) KNN(query [14]float32, k int) int {
 	q11 := query[11]
 	q12 := query[12]
 	q13 := query[13]
+	q14 := query[14]
+	q15 := query[15]
 
 	var topCArr [nprobe]centEntry
 	topC := topCArr[:0]
@@ -53,10 +55,10 @@ func (idx *IVFIndex) KNN(query [14]float32, k int) int {
 	maxCP := 0
 
 	// Phase 1: find nprobe nearest centroids.
-	// Unrolled 14-dim loop + incremental base eliminates multiply per centroid.
+	// Unrolled 16-dim loop + incremental base eliminates multiply per centroid.
 	cents := idx.Centroids
 	for c, base := 0, 0; c < idx.C; c, base = c+1, base+dims {
-		_ = cents[base+13] // prove all 14 accesses are in-bounds; elides 13 checks
+		_ = cents[base+15] // prove all 16 accesses are in-bounds; elides 15 checks
 		d0 := q0 - cents[base]
 		d1 := q1 - cents[base+1]
 		d2 := q2 - cents[base+2]
@@ -71,8 +73,11 @@ func (idx *IVFIndex) KNN(query [14]float32, k int) int {
 		d11 := q11 - cents[base+11]
 		d12 := q12 - cents[base+12]
 		d13 := q13 - cents[base+13]
+		d14 := q14 - cents[base+14]
+		d15 := q15 - cents[base+15]
 		d := d0*d0 + d1*d1 + d2*d2 + d3*d3 + d4*d4 + d5*d5 + d6*d6 +
-			d7*d7 + d8*d8 + d9*d9 + d10*d10 + d11*d11 + d12*d12 + d13*d13
+			d7*d7 + d8*d8 + d9*d9 + d10*d10 + d11*d11 + d12*d12 + d13*d13 +
+			d14*d14 + d15*d15
 
 		if len(topC) < np {
 			topC = append(topC, centEntry{d, c})
@@ -105,7 +110,7 @@ func (idx *IVFIndex) KNN(query [14]float32, k int) int {
 		base := start * dims
 
 		for vi := start; vi < start+size; vi, base = vi+1, base+dims {
-			_ = vecs[base+13] // elide 13 bounds checks
+			_ = vecs[base+15] // elide 15 bounds checks
 
 			d0 := q0 - float32(vecs[base])*invScale
 			dist := d0 * d0
@@ -131,7 +136,10 @@ func (idx *IVFIndex) KNN(query [14]float32, k int) int {
 			d11 := q11 - float32(vecs[base+11])*invScale
 			d12 := q12 - float32(vecs[base+12])*invScale
 			d13 := q13 - float32(vecs[base+13])*invScale
-			dist += d8*d8 + d9*d9 + d10*d10 + d11*d11 + d12*d12 + d13*d13
+			d14 := q14 - float32(vecs[base+14])*invScale
+			d15 := q15 - float32(vecs[base+15])*invScale
+			dist += d8*d8 + d9*d9 + d10*d10 + d11*d11 + d12*d12 + d13*d13 +
+				d14*d14 + d15*d15
 
 			if len(top) < k {
 				top = append(top, knnEntry{dist, labs[vi]})
