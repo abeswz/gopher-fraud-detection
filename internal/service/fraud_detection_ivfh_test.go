@@ -8,6 +8,8 @@ import (
 	"gopher-fraud-detection/internal/vectorizer"
 )
 
+var _ search.Index = (*stubIndex)(nil)
+
 // stubIndex returns a fixed fraudCount regardless of query.
 type stubIndex struct{ count int }
 
@@ -17,7 +19,6 @@ func TestRouting_NilLastTx_UsesFirstIdx(t *testing.T) {
 	FirstTxIdx = &stubIndex{count: 4} // fraud
 	SubseqIdx = &stubIndex{count: 0}  // legit
 	Vec = &vectorizer.Vectorizer{MccRisk: map[string]float32{}}
-	_ = search.Index(FirstTxIdx)
 
 	req := dto.FraudRequest{}
 	// LastTx is nil (zero value for *LastTransaction) → routes to FirstTxIdx → fraudCount=4
@@ -28,8 +29,8 @@ func TestRouting_NilLastTx_UsesFirstIdx(t *testing.T) {
 }
 
 func TestRouting_NonNilLastTx_UsesSubseqIdx(t *testing.T) {
-	FirstTxIdx = &stubIndex{count: 0}  // legit
-	SubseqIdx = &stubIndex{count: 3}   // fraud
+	FirstTxIdx = &stubIndex{count: 0} // legit
+	SubseqIdx = &stubIndex{count: 3}  // fraud
 	Vec = &vectorizer.Vectorizer{MccRisk: map[string]float32{}}
 
 	lastTx := &dto.LastTransaction{}
