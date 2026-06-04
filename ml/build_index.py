@@ -9,13 +9,13 @@ from cuml.cluster import KMeans
 from cuml.neighbors import NearestNeighbors as cuNearestNeighbors
 
 # 2-level IVF hyperparameters
-K1_FIRST = 64    # macro clusters, first_tx index
-K2_FIRST = 32    # micro clusters per macro, first_tx index
-K1_SUBSEQ = 128  # macro clusters, subsequent_tx index
-K2_SUBSEQ = 32   # micro clusters per macro, subsequent_tx index
+K1_FIRST = 64  # macro clusters, first_tx index
+K2_FIRST = 32  # micro clusters per macro, first_tx index
+K1_SUBSEQ = 256  # macro clusters, subsequent_tx index
+K2_SUBSEQ = 16  # micro clusters per macro, subsequent_tx index
 
-DIMS = 16        # padded feature dims (14 features + 2 zero-padding)
-SCALE = 10000    # int16 quantization factor
+DIMS = 16  # padded feature dims (14 features + 2 zero-padding)
+SCALE = 10000  # int16 quantization factor
 
 
 def detect_null_tx_mask(vectors: np.ndarray) -> np.ndarray:
@@ -23,8 +23,9 @@ def detect_null_tx_mask(vectors: np.ndarray) -> np.ndarray:
     return (vectors[:, 5] == -1.0) & (vectors[:, 6] == -1.0)
 
 
-def boundary_oversample(vectors: np.ndarray, labels: np.ndarray,
-                        sample_size: int = 50_000) -> tuple[np.ndarray, np.ndarray]:
+def boundary_oversample(
+    vectors: np.ndarray, labels: np.ndarray, sample_size: int = 50_000
+) -> tuple[np.ndarray, np.ndarray]:
     """Return augmented (vectors, labels) with boundary vectors duplicated 3x."""
     n = len(labels)
     sample_idx = np.random.choice(n, min(sample_size, n), replace=False)
@@ -34,8 +35,9 @@ def boundary_oversample(vectors: np.ndarray, labels: np.ndarray,
     sample_gpu = cp.asarray(sample, dtype=cp.float32)
     vectors_gpu = cp.asarray(vectors, dtype=cp.float32)
 
-    nbrs = cuNearestNeighbors(n_neighbors=5, algorithm='brute',
-                               metric='euclidean', output_type='numpy')
+    nbrs = cuNearestNeighbors(
+        n_neighbors=5, algorithm="brute", metric="euclidean", output_type="numpy"
+    )
     nbrs.fit(vectors_gpu)
     _, indices = nbrs.kneighbors(sample_gpu)
 
@@ -51,9 +53,9 @@ def boundary_oversample(vectors: np.ndarray, labels: np.ndarray,
     return vectors_aug, labels_aug
 
 
-def two_level_kmeans(vectors: np.ndarray, labels: np.ndarray,
-                     vectors_aug: np.ndarray,
-                     K1: int, K2: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def two_level_kmeans(
+    vectors: np.ndarray, labels: np.ndarray, vectors_aug: np.ndarray, K1: int, K2: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Fit 2-level KMeans on augmented vectors, assign original vectors.
     Returns: macro_centroids (K1×DIMS), micro_centroids (K1*K2×DIMS),
@@ -64,8 +66,14 @@ def two_level_kmeans(vectors: np.ndarray, labels: np.ndarray,
     vectors_gpu_aug = cp.asarray(vectors_aug, dtype=cp.float32)
 
     print(f"  Level-1 KMeans: K1={K1}, fit on {len(vectors_aug)} aug vecs...")
-    km1 = KMeans(n_clusters=K1, init='scalable-k-means++', n_init=10,
-                 max_iter=300, random_state=42, output_type='numpy')
+    km1 = KMeans(
+        n_clusters=K1,
+        init="scalable-k-means++",
+        n_init=10,
+        max_iter=300,
+        random_state=42,
+        output_type="numpy",
+    )
     km1.fit(vectors_gpu_aug)
     macro_centroids = km1.cluster_centers_.astype(np.float32)  # (K1, DIMS)
 
@@ -83,8 +91,14 @@ def two_level_kmeans(vectors: np.ndarray, labels: np.ndarray,
             # degenerate macro cluster: assign all to micro 0
             micro_assignments[macro_assignments_orig == i] = i * K2
             continue
-        km2 = KMeans(n_clusters=K2, init='scalable-k-means++', n_init=5,
-                     max_iter=200, random_state=42, output_type='numpy')
+        km2 = KMeans(
+            n_clusters=K2,
+            init="scalable-k-means++",
+            n_init=5,
+            max_iter=200,
+            random_state=42,
+            output_type="numpy",
+        )
         km2.fit(vecs_aug_i)
         micro_centroids[i] = km2.cluster_centers_
 
@@ -95,14 +109,19 @@ def two_level_kmeans(vectors: np.ndarray, labels: np.ndarray,
             micro_assignments[mask_orig] = i * K2 + local_assign
 
         if (i + 1) % 16 == 0:
-            print(f"    macro {i+1}/{K1} done")
+            print(f"    macro {i + 1}/{K1} done")
 
     micro_centroids_flat = micro_centroids.reshape(K1 * K2, DIMS)
     return macro_centroids, micro_centroids_flat, micro_assignments
 
 
-def balanced_kmeans(vectors: np.ndarray, micro_centroids_flat: np.ndarray,
-                    micro_assignments: np.ndarray, K1: int, K2: int) -> np.ndarray:
+def balanced_kmeans(
+    vectors: np.ndarray,
+    micro_centroids_flat: np.ndarray,
+    micro_assignments: np.ndarray,
+    K1: int,
+    K2: int,
+) -> np.ndarray:
     """Reassign overflow vectors (>1.5× avg leaf size) to nearest sibling with capacity."""
     N_leaves = K1 * K2
     cluster_sizes = np.bincount(micro_assignments, minlength=N_leaves).astype(np.int32)
@@ -122,13 +141,17 @@ def balanced_kmeans(vectors: np.ndarray, micro_centroids_flat: np.ndarray,
             overflow_idxs = idxs[np.argsort(-dists)[:n_overflow]]
 
             for v in overflow_idxs:
-                siblings = [macro_id * K2 + j for j in range(K2)
-                            if j != micro_local and cluster_sizes[macro_id * K2 + j] < max_size]
+                siblings = [
+                    macro_id * K2 + j
+                    for j in range(K2)
+                    if j != micro_local and cluster_sizes[macro_id * K2 + j] < max_size
+                ]
                 if not siblings:
                     continue
                 sib_cents = micro_centroids_flat[[s for s in siblings]]
-                nearest_sib = siblings[int(np.argmin(
-                    np.linalg.norm(sib_cents - vectors[v], axis=1)))]
+                nearest_sib = siblings[
+                    int(np.argmin(np.linalg.norm(sib_cents - vectors[v], axis=1)))
+                ]
                 micro_assignments[v] = nearest_sib
                 cluster_sizes[c] -= 1
                 cluster_sizes[nearest_sib] += 1
@@ -142,11 +165,12 @@ def compute_dsafe(vectors: np.ndarray, labels: np.ndarray) -> float:
     brute-force k=5 gives fraudCount==0. Stored as L2 (not L2²).
     """
     legit_idxs = np.where(labels == 0)[0]
-    sample_idx = legit_idxs[:min(10_000, len(legit_idxs))]
+    sample_idx = legit_idxs[: min(10_000, len(legit_idxs))]
     sample_vecs = cp.asarray(vectors[sample_idx], dtype=cp.float32)
 
-    nbrs = cuNearestNeighbors(n_neighbors=5, algorithm='brute',
-                               metric='euclidean', output_type='numpy')
+    nbrs = cuNearestNeighbors(
+        n_neighbors=5, algorithm="brute", metric="euclidean", output_type="numpy"
+    )
     nbrs.fit(cp.asarray(vectors, dtype=cp.float32))
     dists_sq, neighbor_idx = nbrs.kneighbors(sample_vecs)
     # dists_sq shape: (sample_size, 5) — squared euclidean from cuML
@@ -157,12 +181,15 @@ def compute_dsafe(vectors: np.ndarray, labels: np.ndarray) -> float:
 
     max_dists = np.sqrt(dists_sq[truly_legit, 4])  # L2 to 5th neighbor
     d_safe = float(np.percentile(max_dists, 99))
-    print(f"  D_safe = {d_safe:.6f} (99th pct of dist-to-5th-neighbor for fraudCount==0)")
+    print(
+        f"  D_safe = {d_safe:.6f} (99th pct of dist-to-5th-neighbor for fraudCount==0)"
+    )
     return d_safe
 
 
-def build_ivfh(vectors: np.ndarray, labels: np.ndarray,
-               K1: int, K2: int, dst: Path) -> None:
+def build_ivfh(
+    vectors: np.ndarray, labels: np.ndarray, K1: int, K2: int, dst: Path
+) -> None:
     N = len(labels)
     print(f"Building IVFH: N={N}, K1={K1}, K2={K2} → {dst.name}")
 
@@ -170,21 +197,25 @@ def build_ivfh(vectors: np.ndarray, labels: np.ndarray,
     vectors_aug, _ = boundary_oversample(vectors, labels)
 
     # 2-level KMeans
-    macro_centroids, micro_centroids_flat, micro_assignments = \
-        two_level_kmeans(vectors, labels, vectors_aug, K1, K2)
+    macro_centroids, micro_centroids_flat, micro_assignments = two_level_kmeans(
+        vectors, labels, vectors_aug, K1, K2
+    )
 
     # Balanced k-means post-processing
     micro_assignments = balanced_kmeans(
-        vectors, micro_centroids_flat, micro_assignments, K1, K2)
+        vectors, micro_centroids_flat, micro_assignments, K1, K2
+    )
 
     # Sort vectors by leaf assignment
-    sort_idx = np.argsort(micro_assignments, kind='stable')
+    sort_idx = np.argsort(micro_assignments, kind="stable")
     vectors_sorted = vectors[sort_idx]
     labels_sorted = labels[sort_idx]
     micro_assignments_sorted = micro_assignments[sort_idx]
 
     N_leaves = K1 * K2
-    cluster_sizes = np.bincount(micro_assignments_sorted, minlength=N_leaves).astype(np.uint32)
+    cluster_sizes = np.bincount(micro_assignments_sorted, minlength=N_leaves).astype(
+        np.uint32
+    )
     cluster_starts = np.zeros(N_leaves, dtype=np.uint32)
     cluster_starts[1:] = np.cumsum(cluster_sizes[:-1])
 
@@ -194,7 +225,7 @@ def build_ivfh(vectors: np.ndarray, labels: np.ndarray,
         s, sz = int(cluster_starts[c]), int(cluster_sizes[c])
         if sz == 0:
             continue
-        vecs_in_c = vectors_sorted[s:s+sz]
+        vecs_in_c = vectors_sorted[s : s + sz]
         cent = micro_centroids_flat[c]
         dists = np.linalg.norm(vecs_in_c - cent, axis=1)
         cluster_radius[c] = float(dists.max())
@@ -203,24 +234,24 @@ def build_ivfh(vectors: np.ndarray, labels: np.ndarray,
     d_safe = compute_dsafe(vectors, labels)
 
     # Quantize vectors to int16
-    vectors_int16 = np.clip(
-        np.round(vectors_sorted * SCALE), -32768, 32767
-    ).astype(np.int16)
+    vectors_int16 = np.clip(np.round(vectors_sorted * SCALE), -32768, 32767).astype(
+        np.int16
+    )
 
     # Write IVFH binary
     dst.parent.mkdir(exist_ok=True)
-    with open(dst, 'wb') as out:
-        out.write(b'IVFH')
-        out.write(struct.pack('<f', d_safe))
-        out.write(struct.pack('<II', K1, K2))
-        out.write(struct.pack('<I', N))
-        out.write(macro_centroids.astype('<f4').tobytes())
-        out.write(micro_centroids_flat.astype('<f4').tobytes())
-        out.write(cluster_starts.astype('<u4').tobytes())
-        out.write(cluster_sizes.astype('<u4').tobytes())
-        out.write(cluster_radius.astype('<f4').tobytes())
-        out.write(vectors_int16.astype('<i2').tobytes())
-        out.write(labels_sorted.astype('u1').tobytes())
+    with open(dst, "wb") as out:
+        out.write(b"IVFH")
+        out.write(struct.pack("<f", d_safe))
+        out.write(struct.pack("<II", K1, K2))
+        out.write(struct.pack("<I", N))
+        out.write(macro_centroids.astype("<f4").tobytes())
+        out.write(micro_centroids_flat.astype("<f4").tobytes())
+        out.write(cluster_starts.astype("<u4").tobytes())
+        out.write(cluster_sizes.astype("<u4").tobytes())
+        out.write(cluster_radius.astype("<f4").tobytes())
+        out.write(vectors_int16.astype("<i2").tobytes())
+        out.write(labels_sorted.astype("u1").tobytes())
 
     size_mb = dst.stat().st_size / 1024 / 1024
     fraud_pct = labels.mean() * 100
@@ -229,33 +260,42 @@ def build_ivfh(vectors: np.ndarray, labels: np.ndarray,
 
 def main():
     root = Path(__file__).parent.parent
-    src = root / 'resources' / 'references.json.gz'
-    dst_dir = root / 'index'
+    src = root / "resources" / "references.json.gz"
+    dst_dir = root / "index"
 
-    print('Loading records...')
+    print("Loading records...")
     with gzip.open(src) as f:
         records = json.load(f)
     n = len(records)
-    print(f'Loaded {n} records')
+    print(f"Loaded {n} records")
 
     # Pad 14-dim features to 16 dims (zeros in dims 14, 15)
     vectors = np.zeros((n, DIMS), dtype=np.float32)
-    vectors[:, :14] = np.array([rec['vector'] for rec in records], dtype=np.float32)
+    vectors[:, :14] = np.array([rec["vector"] for rec in records], dtype=np.float32)
     labels = np.array(
-        [1 if rec['label'] == 'fraud' else 0 for rec in records], dtype=np.uint8)
+        [1 if rec["label"] == "fraud" else 0 for rec in records], dtype=np.uint8
+    )
 
     # Split by null last_transaction sentinel (dims 5 and 6 == -1.0)
     null_mask = detect_null_tx_mask(vectors)
     vectors_first, labels_first = vectors[null_mask], labels[null_mask]
     vectors_subseq, labels_subseq = vectors[~null_mask], labels[~null_mask]
-    print(f'Split: first_tx={len(labels_first)} ({null_mask.mean()*100:.1f}%), '
-          f'subsequent_tx={len(labels_subseq)}')
+    print(
+        f"Split: first_tx={len(labels_first)} ({null_mask.mean() * 100:.1f}%), "
+        f"subsequent_tx={len(labels_subseq)}"
+    )
 
-    build_ivfh(vectors_first, labels_first, K1_FIRST, K2_FIRST,
-               dst_dir / 'first_tx.ivfh')
-    build_ivfh(vectors_subseq, labels_subseq, K1_SUBSEQ, K2_SUBSEQ,
-               dst_dir / 'subsequent_tx.ivfh')
+    build_ivfh(
+        vectors_first, labels_first, K1_FIRST, K2_FIRST, dst_dir / "first_tx.ivfh"
+    )
+    build_ivfh(
+        vectors_subseq,
+        labels_subseq,
+        K1_SUBSEQ,
+        K2_SUBSEQ,
+        dst_dir / "subsequent_tx.ivfh",
+    )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

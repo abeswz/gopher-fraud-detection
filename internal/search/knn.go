@@ -39,10 +39,12 @@ func centFindMax(entries []centEntry) (maxDist float32, maxPos int) {
 }
 
 const (
-	NCoarseProbeSubseq = 4
-	NCoarseProbeFirst  = 3
+	NCoarseProbeSubseq = 16
+	NCoarseProbeFirst  = 12
 	nprobeInit         = 8
 	nprobeMax          = 20
+	nprobeRepair       = 128
+	nprobeThreshRepair = 128
 )
 
 func sqrt32(x float32) float32 {
@@ -68,7 +70,7 @@ func (idx *IVFHIndex) KNN(query [16]float32, k int) int {
 	q15 := query[15]
 
 	nCoarse := min(idx.NCoarseProbe, idx.K1)
-	nMicro := min(nprobeMax, idx.K1*idx.K2)
+	nMicro := min(nprobeRepair, idx.K1*idx.K2)
 
 	var topMacroArr [NCoarseProbeSubseq]centEntry
 	topMacro := topMacroArr[:0]
@@ -109,7 +111,7 @@ func (idx *IVFHIndex) KNN(query [16]float32, k int) int {
 		}
 	}
 
-	var topMicroArr [nprobeMax]centEntry
+	var topMicroArr [nprobeRepair]centEntry
 	topMicro := topMicroArr[:0]
 	maxMicroD := float32(0)
 	maxMicroP := 0
@@ -213,12 +215,170 @@ func ivfhScanVectors(idx *IVFHIndex, topMicro []centEntry, query *[16]float32, k
 		}
 	}
 
-	// repair path: probe remaining clusters with centroid-distance pruning
-	for _, ce := range topMicro[fastEnd:] {
+	// phase 2: standard repair — probe next clusters up to nprobeMax with centroid pruning
+	standardEnd := min(nprobeMax, len(topMicro))
+	for _, ce := range topMicro[fastEnd:standardEnd] {
 		dCentroid := sqrt32(ce.dist)
 		radius := idx.Radii[ce.id]
 		lowerBound := dCentroid - radius
 		if lowerBound > 0 && lowerBound*lowerBound > maxDist {
+			break
+		}
+
+		start := int(idx.Starts[ce.id])
+		size := int(idx.Sizes[ce.id])
+		base := start * dims
+
+		for vi := start; vi < start+size; vi, base = vi+1, base+dims {
+			_ = vecs[base+15]
+			d0 := q0 - float32(vecs[base])*invScale
+			if len(top) == k && d0*d0 >= maxDist {
+				continue
+			}
+			dist := distL2i16_16(vecs, base, query)
+			if len(top) < k {
+				top = append(top, knnEntry{dist, labs[vi]})
+				if len(top) == k {
+					maxDist, maxPos = knnFindMax(top)
+				}
+			} else if dist < maxDist {
+				top[maxPos] = knnEntry{dist, labs[vi]}
+				maxDist, maxPos = knnFindMax(top)
+			}
+		}
+	}
+
+	// mid-check: clear consensus after standard repair → skip deep repair
+	if len(top) == k {
+		fraudCount := countFraudH(top)
+		if fraudCount == 0 || fraudCount == k {
+			return fraudCount
+		}
+		// ambiguous (1–4): deep repair — probe remaining candidates
+		for _, ce := range topMicro[standardEnd:] {
+			dCentroid := sqrt32(ce.dist)
+			radius := idx.Radii[ce.id]
+			lowerBound := dCentroid - radius
+			if lowerBound > 0 && lowerBound*lowerBound > maxDist {
+				break
+			}
+
+			start := int(idx.Starts[ce.id])
+			size := int(idx.Sizes[ce.id])
+			base := start * dims
+
+			for vi := start; vi < start+size; vi, base = vi+1, base+dims {
+				_ = vecs[base+15]
+				d0 := q0 - float32(vecs[base])*invScale
+				if len(top) == k && d0*d0 >= maxDist {
+					continue
+				}
+				dist := distL2i16_16(vecs, base, query)
+				if len(top) < k {
+					top = append(top, knnEntry{dist, labs[vi]})
+					if len(top) == k {
+						maxDist, maxPos = knnFindMax(top)
+					}
+				} else if dist < maxDist {
+					top[maxPos] = knnEntry{dist, labs[vi]}
+					maxDist, maxPos = knnFindMax(top)
+				}
+			}
+		}
+	}
+
+	finalCount := countFraudH(top)
+	if len(top) == k && finalCount == 3 {
+		return idx.knnFullMacroRepair(query, k)
+	}
+	return finalCount
+}
+
+// knnFullMacroRepair scans ALL K1*K2 micro centroids to find true top-k neighbors.
+// Only called for fraudCount==3 (knife-edge: 3/5=0.6 = exact threshold).
+func (idx *IVFHIndex) knnFullMacroRepair(query *[16]float32, k int) int {
+	q0 := (*query)[0]
+	q1 := (*query)[1]
+	q2 := (*query)[2]
+	q3 := (*query)[3]
+	q4 := (*query)[4]
+	q5 := (*query)[5]
+	q6 := (*query)[6]
+	q7 := (*query)[7]
+	q8 := (*query)[8]
+	q9 := (*query)[9]
+	q10 := (*query)[10]
+	q11 := (*query)[11]
+	q12 := (*query)[12]
+	q13 := (*query)[13]
+	q14 := (*query)[14]
+	q15 := (*query)[15]
+
+	nMicro := min(nprobeThreshRepair, idx.K1*idx.K2)
+	var topMicroArr [nprobeThreshRepair]centEntry
+	topMicro := topMicroArr[:0]
+	maxMicroD := float32(0)
+	maxMicroP := 0
+
+	mcents := idx.MicroCentroids
+	total := idx.K1 * idx.K2
+	for leafID, base := 0, 0; leafID < total; leafID, base = leafID+1, base+dims {
+		_ = mcents[base+15]
+		d0 := q0 - mcents[base]
+		d1 := q1 - mcents[base+1]
+		d2 := q2 - mcents[base+2]
+		d3 := q3 - mcents[base+3]
+		d4 := q4 - mcents[base+4]
+		d5 := q5 - mcents[base+5]
+		d6 := q6 - mcents[base+6]
+		d7 := q7 - mcents[base+7]
+		d8 := q8 - mcents[base+8]
+		d9 := q9 - mcents[base+9]
+		d10 := q10 - mcents[base+10]
+		d11 := q11 - mcents[base+11]
+		d12 := q12 - mcents[base+12]
+		d13 := q13 - mcents[base+13]
+		d14 := q14 - mcents[base+14]
+		d15 := q15 - mcents[base+15]
+		d := d0*d0 + d1*d1 + d2*d2 + d3*d3 + d4*d4 + d5*d5 + d6*d6 +
+			d7*d7 + d8*d8 + d9*d9 + d10*d10 + d11*d11 + d12*d12 + d13*d13 +
+			d14*d14 + d15*d15
+
+		if len(topMicro) < nMicro {
+			topMicro = append(topMicro, centEntry{d, leafID})
+			if len(topMicro) == nMicro {
+				maxMicroD, maxMicroP = centFindMax(topMicro)
+			}
+		} else if d < maxMicroD {
+			topMicro[maxMicroP] = centEntry{d, leafID}
+			maxMicroD, maxMicroP = centFindMax(topMicro)
+		}
+	}
+
+	n := len(topMicro)
+	for i := 1; i < n; i++ {
+		key := topMicro[i]
+		j := i - 1
+		for j >= 0 && topMicro[j].dist > key.dist {
+			topMicro[j+1] = topMicro[j]
+			j--
+		}
+		topMicro[j+1] = key
+	}
+
+	var topArr [5]knnEntry
+	top := topArr[:0]
+	maxDist := float32(0)
+	maxPos := 0
+
+	vecs := idx.Vectors
+	labs := idx.Labels
+
+	for _, ce := range topMicro {
+		dCentroid := sqrt32(ce.dist)
+		radius := idx.Radii[ce.id]
+		lowerBound := dCentroid - radius
+		if len(top) == k && lowerBound > 0 && lowerBound*lowerBound > maxDist {
 			break
 		}
 
