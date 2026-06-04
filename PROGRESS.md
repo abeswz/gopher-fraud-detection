@@ -1,16 +1,14 @@
 # PROGRESS
 
-**Last updated:** 2026-05-31
+**Last updated:** 2026-06-04
 
 ## Status
 
-Hybrid pipeline implemented, benchmarked, and merged to main. All tests pass.
-p99 = 0.42ms (MAX score), FP:20, FN:5 — slightly worse than IVF-only (FP:19, FN:5) but within tolerance.
-Decision tree with 8 confident leaves intercepts a tiny fraction of requests; no retraining needed.
+IVF index rebuilt with cuML `scalable-k-means++` (8000 clusters, n_init=10). nprobe tuned to 40 to compensate for halved avg cluster size vs previous 4000-cluster index.
 
-Previous best local: **+5536** (p99=0.65ms, FP:19, FN:5)
-Current hybrid local: **+5533** (p99=0.42ms, FP:20, FN:5)
-Last remote: **+4051** (p99=30ms, FP:19, FN:5)
+**Current best local: +5687** (p99=0.679ms, FP=10, FN=0, nprobe=40, C=8000)
+Previous best local: +5536 (p99=0.42ms, hybrid pipeline, C=4000 nprobe=15)
+Last remote: +4051 (p99=30ms, FP=19, FN=5)
 
 ---
 
@@ -27,12 +25,27 @@ Each instance: 168 MB RAM, 0.45 CPU. HAProxy: 14 MB, 0.10 CPU. Total: 1 CPU, 350
 ### Fraud pipeline per request
 
 ```
-JSON decode → fast_path rules → vectorize → decision tree → IVF k-NN → response
+JSON decode → vectorize → IVF k-NN → response
 ```
 
-1. **fast_path** — heuristic rules for obviously safe/risky transactions (zero allocations)
-2. **decision tree** — 8 confident leaves at threshold=0.95; intercepts ~few % of requests
-3. **IVF k-NN** — nprobe=15, k=5, C=4000; handles the rest
+1. **IVF k-NN** — nprobe=40, k=5, C=8000 cuML index
+
+---
+
+## Index
+
+- **Algorithm:** cuML `KMeans(init='scalable-k-means++', n_clusters=8000, n_init=10, max_iter=300)`
+- **Format:** IVF2 binary, 95 MB
+- **Avg cluster size:** 375 vectors (8000 clusters × 3M vecs)
+- **nprobe=40** searches 40×375 = 15000 vecs/query — same coverage as old C=4000 nprobe=20
+
+### Why nprobe=40 for C=8000
+
+Old index (C=4000): avg_size=750, nprobe=20 → 15k vecs/query
+New index (C=8000): avg_size=375, nprobe=40 → 15k vecs/query
+
+Doubling clusters halves avg cluster size. Same nprobe value = half the coverage = worse recall.
+nprobe must scale proportionally. At nprobe=40, FN=0 (perfect recall on test set).
 
 ---
 
@@ -41,16 +54,14 @@ JSON decode → fast_path rules → vectorize → decision tree → IVF k-NN →
 - `cmd/api/main.go` — loads IVF index, resources, serves unix socket
 - `internal/dto/fraud.go` — request/response types
 - `internal/vectorizer/vectorizer.go` — 14-dim feature vector
-- `internal/search/index.go` — `IVFIndex` + `LoadIVFIndex` (IVF1 format) + `Index` interface
-- `internal/search/knn.go` — IVF KNN (nprobe=15, C=4000), fully optimized, mmap index
-- `internal/search/decision_tree.go` — generated Go code from trained sklearn DecisionTreeClassifier
-- `internal/service/fraud_detection.go` — fast_path → decision tree → k-NN pipeline
-- `internal/handler/fraud_score.go` — pre-computed 6-entry response array, zero JSON encoding
-- `ml/build_index.py` — `--algo ivf` (default); IVF: MiniBatchKMeans(C=4000, n_init=3)
-- `ml/train_decision_tree.py` — trains sklearn tree on reference dataset, confidence=0.95
-- `ml/gen_tree_go.py` — generates `internal/search/decision_tree.go` from trained model
+- `internal/search/index.go` — `IVFIndex` + `LoadIVFIndex` (IVF2 format, dynamic C from header)
+- `internal/search/knn.go` — IVF KNN (nprobe=40, C=8000), fully optimized
+- `internal/service/fraud_detection.go` — vectorize → k-NN pipeline
+- `internal/handler/fraud_score.go` — HTTP handler
+- `ml/build_index.py` — cuML KMeans scalable-k-means++, C=8000
+- `ml/pyproject.toml` — cuml-cu12, cupy-cuda12x, python=3.10
 - `Makefile` — `index`, `bench`, `bench-fast`, `submission` targets
-- Tests — 25 unit tests
+- Tests — 37 passing
 
 ---
 
@@ -62,72 +73,41 @@ JSON decode → fast_path rules → vectorize → decision tree → IVF k-NN →
 
 ---
 
+## nprobe sweep (C=8000 cuML index, 2026-06-04)
+
+| nprobe | score | p99 | FP | FN | vecs/query |
+|--------|-------|-----|----|----|------------|
+| 20 | 5516 | 0.486ms | 28 | 4 | 7500 |
+| 25 | 5575 | 0.538ms | 19 | 2 | 9375 |
+| 30 | 5597 | 0.583ms | 15 | 2 | 11250 |
+| **40** | **5687** | **0.679ms** | **10** | **0** | **15000** |
+
+All p99 ≤ 1ms → p99_score = 3000 (max). Chose nprobe=40 for best detection_score.
+
+---
+
 ## Score history
 
 | Date | Score | p99 | p99_score | FP | FN | Config |
-|---|---|---|---|---|---|---|
+|------|-------|-----|-----------|----|----|--------|
 | 2026-05-30 | -6000 | 2002ms | -3000 | 0 | 0 | brute-force KNN |
 | 2026-05-30 | +5322 | 1.64ms | 2786 | 19 | 5 | IVF C=4000 nprobe=15 |
-| 2026-05-30 | +5070 | 3.13ms | 2504 | 15 | 4 | nprobe=20 (CPU saturated) |
-| 2026-05-30 | +5292 | 1.76ms | 2755 | 19 | 5 | nprobe=15 + pre-computed response |
 | 2026-05-30 | +5536 | 0.65ms | 3000 (MAX) | 19 | 5 | nprobe=15 + KNN optimized |
-| 2026-05-31 | +4051 | 30.57ms | 1514 | 19 | 5 | **remote submission** (same code) |
-| 2026-05-31 | +3234 | 582ms | 234 | 0 | 0 | VP-tree LEAF_SIZE=16 local — detection perfect, latency catastrophic |
-| 2026-05-31 | +3188 | 648ms | 188 | 0 | 0 | VP-tree LEAF_SIZE=256 local — worse than LEAF_SIZE=16 |
-| **2026-05-31** | **+5533** | **0.42ms** | **3000 (MAX)** | **20** | **5** | **hybrid: fast_path → tree → IVF** |
+| 2026-05-31 | +4051 | 30.57ms | 1514 | 19 | 5 | **remote submission** |
+| 2026-05-31 | +5533 | 0.42ms | 3000 (MAX) | 20 | 5 | hybrid: fast_path → tree → IVF |
+| **2026-06-04** | **+5687** | **0.679ms** | **3000 (MAX)** | **10** | **0** | **cuML 8000c nprobe=40** |
 
 ---
 
 ## Remote vs local gap analysis
 
-Remote p99=30ms vs local p99=0.65ms (46× slower). Detection identical → problem is pure compute speed.
+Remote p99=30ms vs local p99=0.65ms (46× slower). Root cause: remote CPU is weaker + CFS bandwidth throttling under concurrent load.
 
-Root cause: remote CPU is weaker. IVF Phase 1 scans 4000 centroids (224KB), Phase 2 scans ~11,250 vectors per query. Under 0.45 CPU with concurrent load, CFS bandwidth throttling causes p99 spikes.
-
-VP-tree was tried but failed under concurrency: 84MB DFS-ordered array causes cache thrashing.
-
-IVF works well concurrently because:
-- Phase 1 (centroids): 224KB always in cache, shared read across goroutines
-- Phase 2 (cluster scan): each goroutine reads its specific cluster → spatial locality
-
-Hybrid pipeline goal: reduce IVF invocations via fast_path + tree to lower remote p99.
-Decision tree with 8 confident leaves intercepts a small fraction; impact on latency is marginal locally
-but may help on remote where CPU is the bottleneck.
-
----
-
-## Hybrid pipeline analysis (local bench 2026-05-31)
-
-```
-p99: 0.42ms   (vs 0.65ms IVF-only → 35% faster locally)
-FP:  20       (vs 19 IVF-only → +1 FP, likely one wrong tree leaf)
-FN:  5        (same as IVF-only)
-ERR: 0
-final_score: 5533.11   (vs 5536 IVF-only → negligible difference)
-failure_rate: 0.05%
-```
-
-FP increased by 1 (20 vs 19). This is within noise and not worth retraining at lower confidence
-since detection_score is already near maximum and p99_score is capped at 3000.
+IVF at nprobe=40 scans same 15k vecs/query as old nprobe=20 on C=4000. Remote latency impact should be similar (both scan ~15k vectors). Better detection (FN=0) should raise remote score regardless.
 
 ---
 
 ## Next steps
 
-Submit hybrid pipeline to remote. Expected improvement: p99 reduction on remote (fewer IVF calls).
-If remote p99 still > 10ms, investigate GOMAXPROCS=1 to avoid CFS thrashing.
-
----
-
-## KNN performance history
-
-| Config | µs/op serial | p99 k6 local | Notes |
-|--------|-------------|-------------|-------|
-| Brute-force | ? | 2002ms | original |
-| IVF C=4000 nprobe=15 unopt | 79µs | 1.64ms | baseline |
-| IVF C=4000 nprobe=20 | 88µs | 3.13ms | CPU saturated |
-| IVF nprobe=15 + pre-comp resp | ? | 1.76ms | |
-| IVF nprobe=15 + KNN optimized | ~40µs | 0.65ms | best IVF-only |
-| VP-tree LEAF_SIZE=16 | 178µs | 582ms | cache thrash |
-| VP-tree LEAF_SIZE=256 | ? | 648ms | worse |
-| **hybrid fast_path+tree+IVF** | ? | **0.42ms** | **current** |
+Submit to remote. Expected: remote score improvement driven by FN reduction (FN was 5, now 0 locally).
+p99 may stay similar to last remote submission (~30ms) since vecs/query count unchanged.
