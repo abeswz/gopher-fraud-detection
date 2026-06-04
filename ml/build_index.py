@@ -74,10 +74,10 @@ def two_level_kmeans(vectors: np.ndarray, labels: np.ndarray,
     micro_centroids = np.zeros((K1, K2, DIMS), dtype=np.float32)
     micro_assignments = np.zeros(N, dtype=np.int32)
 
-    aug_labels_aug = km1.predict(vectors_gpu_aug).astype(np.int32)
+    macro_assignments_aug = km1.predict(vectors_gpu_aug).astype(np.int32)
 
     for i in range(K1):
-        mask_aug = aug_labels_aug == i
+        mask_aug = macro_assignments_aug == i
         vecs_aug_i = vectors_gpu_aug[mask_aug]
         if len(vecs_aug_i) < K2:
             # degenerate macro cluster: assign all to micro 0
@@ -246,7 +246,6 @@ def main():
 
     # Split by null last_transaction sentinel (dims 5 and 6 == -1.0)
     null_mask = detect_null_tx_mask(vectors)
-    assert not (null_mask & ~null_mask).any(), "overlap check"
     vectors_first, labels_first = vectors[null_mask], labels[null_mask]
     vectors_subseq, labels_subseq = vectors[~null_mask], labels[~null_mask]
     print(f'Split: first_tx={len(labels_first)} ({null_mask.mean()*100:.1f}%), '
