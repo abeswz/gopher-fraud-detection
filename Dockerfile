@@ -2,13 +2,18 @@ FROM golang:1.26.3 AS builder
 
 WORKDIR /app
 
+ENV CGO_ENABLED=0 \
+    GOOS=linux \
+    GOARCH=amd64 \
+    GOAMD64=v3
+
 COPY go.mod ./
 RUN go mod download
 
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+RUN go build \
     -trimpath \
     -buildvcs=false \
     -ldflags="-s -w" \
