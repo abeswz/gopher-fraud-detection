@@ -3,7 +3,7 @@ package search
 import "math"
 
 const (
-	nprobe   = 8
+	nprobe   = 5
 	invScale = float32(1.0 / 10000.0) // multiply is cheaper than divide
 )
 
