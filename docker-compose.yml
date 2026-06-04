@@ -1,33 +1,9 @@
-x-api: &api
-  build: .
-  restart: unless-stopped
-  ulimits:
-    memlock: -1
-    nofile:
-      soft: 65535
-      hard: 65535
-  volumes:
-    - sock:/run/sock
-  networks:
-    - fraud-net
-  deploy:
-    resources:
-      limits:
-        cpus: "0.45"
-        memory: "168MB"
-
 volumes:
   sock:
-    driver: local
-    driver_opts:
-      type: tmpfs
-      device: tmpfs
-      o: size=4m,mode=0777
 
 services:
   lb:
     image: haproxy:alpine
-    restart: unless-stopped
     ports:
       - "9999:9999"
     volumes:
@@ -35,9 +11,6 @@ services:
       - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
     networks:
       - fraud-net
-    depends_on:
-      - api1
-      - api2
     deploy:
       resources:
         limits:
@@ -45,14 +18,40 @@ services:
           memory: "14MB"
 
   api1:
-    <<: *api
+    build: .
     environment:
       - SOCK=/run/sock/api1.sock
+    volumes:
+      - sock:/run/sock
+    networks:
+      - fraud-net
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    deploy:
+      resources:
+        limits:
+          cpus: "0.45"
+          memory: "168MB"
 
   api2:
-    <<: *api
+    build: .
     environment:
       - SOCK=/run/sock/api2.sock
+    volumes:
+      - sock:/run/sock
+    networks:
+      - fraud-net
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    deploy:
+      resources:
+        limits:
+          cpus: "0.45"
+          memory: "168MB"
 
 networks:
   fraud-net:

@@ -1,33 +1,28 @@
-FROM golang:1.26.3 AS build
+FROM golang:1.26 AS builder
 
-WORKDIR /src
-
-ENV GOEXPERIMENT=simd \
-    CGO_ENABLED=0 \
-    GOOS=linux \
-    GOARCH=amd64 \
-    GOAMD64=v3
+WORKDIR /app
 
 COPY go.mod ./
-
 RUN go mod download
 
-COPY cmd/ ./cmd/
+COPY . .
 
-COPY internal/ ./internal/
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -trimpath \
+    -buildvcs=false \
+    -ldflags="-s -w" \
+    -o fraud-api \
+    ./cmd/api
 
-RUN go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/fraud-api ./cmd/api
+FROM gcr.io/distroless/static-debian12
 
-FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=builder /app/fraud-api /fraud-api
+COPY index/ /app/index/
+COPY resources/ /app/resources/
 
-COPY --from=build /out/fraud-api /fraud-api
-
-COPY index/ /index/
-
-COPY resources/ /resources/
-
-ENV INDEX_PATH=/index/references.bin \
-    NORM_PATH=/resources/normalization.json \
-    MCC_PATH=/resources/mcc_risk.json
+ENV INDEX_PATH=/app/index/references.bin
+ENV NORM_PATH=/app/resources/normalization.json
+ENV MCC_PATH=/app/resources/mcc_risk.json
+ENV GOMAXPROCS=4
 
 ENTRYPOINT ["/fraud-api"]
