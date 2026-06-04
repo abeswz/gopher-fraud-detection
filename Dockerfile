@@ -28,7 +28,6 @@ COPY resources/ /resources/
 
 ENV INDEX_PATH=/index/references.bin \
     NORM_PATH=/resources/normalization.json \
-    MCC_PATH=/resources/mcc_risk.json \
-    GOMAXPROCS=8
+    MCC_PATH=/resources/mcc_risk.json
 
 ENTRYPOINT ["/fraud-api"]
