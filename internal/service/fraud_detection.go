@@ -1,4 +1,3 @@
-// internal/service/fraud_detection.go
 package service
 
 import (
@@ -8,14 +7,13 @@ import (
 )
 
 var (
-	Idx *search.IVFIndex
-	Vec *vectorizer.Vectorizer
+	FirstTxIdx search.Index
+	SubseqIdx  search.Index
+	Vec        *vectorizer.Vectorizer
 )
 
-// CalculateFraudScore returns fraudCount (0–5): number of fraud neighbors among k=5.
-// k=5 and threshold=0.6 are fixed by spec — do not change.
-// Pipeline: fast_path → vectorize → raw_tree → IVF k-NN (AVX2).
-// RawTreePredict short-circuits ~96.5% of requests before the expensive IVF call.
+// CalculateFraudScore returns fraudCount (0–5): fraud neighbors among k=5.
+// Routes by LastTx: nil → firstTx index, non-nil → subsequent index.
 func CalculateFraudScore(req dto.FraudRequest) int {
 	if count, ok := fastPath(req); ok {
 		return count
@@ -24,5 +22,8 @@ func CalculateFraudScore(req dto.FraudRequest) int {
 	if count, ok := RawTreePredict(vec); ok {
 		return count
 	}
-	return Idx.KNN(vec, 5)
+	if req.LastTx == nil {
+		return FirstTxIdx.KNN(vec, 5)
+	}
+	return SubseqIdx.KNN(vec, 5)
 }
