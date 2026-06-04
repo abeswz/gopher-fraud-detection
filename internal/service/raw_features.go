@@ -7,15 +7,9 @@ import (
 	"gopher-fraud-detection/internal/dto"
 )
 
-// RawFeatures holds the 21 extracted features for raw_tree traversal.
-// Feature indices (used by the generated raw_tree.go):
-//
-//	0=Amount, 1=AmountRatio, 2=Installments, 3=TxCount24h, 4=KmFromHome,
-//	5=IsKnownMerchant, 6=MccRiskScore, 7=MerchantAvgAmount, 8=MerchantAmountRatio,
-//	9=HourOfDay, 10=IsOnline, 11=CardPresent, 12=LastKmFromCurrent,
-//	13=LastTimeDeltaSec, 14=AmountOverMax, 15=InstallmentsNorm,
-//	16=TxVelocity, 17=IsSafeMCC, 18=IsRiskyMCC, 19=AmountNormalized,
-//	20=CustomerAvgNormalized
+// RawFeatures indices (referenced by generated raw_tree.go rtFeature array):
+// 0–8: Amount,AmountRatio,Installments,TxCount24h,KmFromHome,IsKnownMerchant,MccRiskScore,MerchantAvgAmount,MerchantAmountRatio
+// 9–20: HourOfDay,IsOnline,CardPresent,LastKmFromCurrent,LastTimeDeltaSec,AmountOverMax,InstallmentsNorm,TxVelocity,IsSafeMCC,IsRiskyMCC,AmountNormalized,CustomerAvgNormalized
 type RawFeatures struct {
 	Amount                float32
 	AmountRatio           float32
@@ -58,9 +52,7 @@ func clampF32(x float32) float32 {
 	return x
 }
 
-// ExtractRawFeatures extracts 21 features from req with zero allocation.
-// Ratio features (AmountRatio, MerchantAmountRatio) return 0.0 when denominator is 0.
-// LastKmFromCurrent and LastTimeDeltaSec return -1.0 when last_transaction is nil.
+// LastKmFromCurrent and LastTimeDeltaSec are -1.0 when last_transaction is nil.
 func ExtractRawFeatures(req dto.FraudRequest, mccRisk map[string]float32) RawFeatures {
 	tx := req.Transaction
 	cust := req.Customer

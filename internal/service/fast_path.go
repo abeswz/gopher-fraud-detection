@@ -10,10 +10,6 @@ var riskyMCCs = map[string]struct{}{
 	"7995": {}, "7801": {}, "7802": {},
 }
 
-// fastPath checks deterministic rules before vectorization and k-NN.
-// Returns (fraudCount, true) when the result is certain; (0, false) otherwise.
-// Safe: ALL conditions met → 0 fraud neighbors.
-// Risky: ALL conditions met → 5 fraud neighbors.
 func fastPath(req dto.FraudRequest) (int, bool) {
 	tx := req.Transaction
 	cust := req.Customer

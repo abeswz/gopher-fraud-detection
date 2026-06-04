@@ -12,8 +12,6 @@ var (
 	Vec        *vectorizer.Vectorizer
 )
 
-// CalculateFraudScore returns fraudCount (0–5): fraud neighbors among k=5.
-// Routes by LastTx: nil → firstTx index, non-nil → subsequent index.
 func CalculateFraudScore(req dto.FraudRequest) int {
 	if count, ok := fastPath(req); ok {
 		return count
