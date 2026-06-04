@@ -20,9 +20,10 @@ COPY --from=builder /app/fraud-api /fraud-api
 COPY index/ /app/index/
 COPY resources/ /app/resources/
 
-ENV INDEX_PATH=/app/index/references.bin
-ENV NORM_PATH=/app/resources/normalization.json
-ENV MCC_PATH=/app/resources/mcc_risk.json
-ENV GOMAXPROCS=4
+ENV FIRST_TX_INDEX_PATH=/app/index/first_tx.ivfh \
+    SUBSEQ_INDEX_PATH=/app/index/subsequent_tx.ivfh \
+    NORM_PATH=/app/resources/normalization.json \
+    MCC_PATH=/app/resources/mcc_risk.json \
+    GOMAXPROCS=4
 
 ENTRYPOINT ["/fraud-api"]

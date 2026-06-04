@@ -97,11 +97,13 @@ func TestFastPath_SafeUnknownMerchant(t *testing.T) {
 // bypass vectorization and k-NN. Uses nil Idx/Vec to prove they're not called.
 func TestCalculateFraudScore_FastPath_NoKNN(t *testing.T) {
 	// Save and nil out globals to prove they are not touched.
-	origIdx := Idx
+	origFirst := FirstTxIdx
+	origSubseq := SubseqIdx
 	origVec := Vec
-	Idx = nil
+	FirstTxIdx = nil
+	SubseqIdx = nil
 	Vec = nil
-	defer func() { Idx = origIdx; Vec = origVec }()
+	defer func() { FirstTxIdx = origFirst; SubseqIdx = origSubseq; Vec = origVec }()
 
 	req := dto.FraudRequest{
 		Transaction: dto.Transaction{Amount: 80, Installments: 2},

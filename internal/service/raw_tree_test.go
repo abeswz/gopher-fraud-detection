@@ -178,7 +178,7 @@ func TestRawTreePredict_ReturnsValidFraudCount(t *testing.T) {
 }
 
 func TestCalculateFraudScore_PipelineSmoke(t *testing.T) {
-	if Idx == nil || Vec == nil {
+	if FirstTxIdx == nil || Vec == nil {
 		t.Skip("service globals not initialized")
 	}
 

@@ -19,7 +19,8 @@ func envOr(key, def string) string {
 }
 
 func main() {
-	indexPath := envOr("INDEX_PATH", "index/references.bin")
+	firstIdxPath := envOr("FIRST_TX_INDEX_PATH", "index/first_tx.ivfh")
+	subseqIdxPath := envOr("SUBSEQ_INDEX_PATH", "index/subsequent_tx.ivfh")
 	normPath := envOr("NORM_PATH", "resources/normalization.json")
 	mccPath := envOr("MCC_PATH", "resources/mcc_risk.json")
 
@@ -28,16 +29,23 @@ func main() {
 		log.Fatalf("load vectorizer: %v", err)
 	}
 
-	ivf, err := search.LoadIVFIndex(indexPath)
+	firstIdx, err := search.LoadIVFHIndex(firstIdxPath, search.NCoarseProbeFirst)
 	if err != nil {
-		log.Fatalf("load index: %v", err)
+		log.Fatalf("load first_tx index: %v", err)
 	}
-	defer ivf.Close()
+	defer firstIdx.Close()
+
+	subseqIdx, err := search.LoadIVFHIndex(subseqIdxPath, search.NCoarseProbeSubseq)
+	if err != nil {
+		log.Fatalf("load subsequent_tx index: %v", err)
+	}
+	defer subseqIdx.Close()
 
 	service.Vec = vec
-	service.Idx = ivf
+	service.FirstTxIdx = firstIdx
+	service.SubseqIdx = subseqIdx
 
-	log.Printf("loaded %d vectors", ivf.N)
+	log.Printf("loaded first_tx: %d vectors, subsequent_tx: %d vectors", firstIdx.N, subseqIdx.N)
 
 	sock := envOr("SOCK", "")
 	if sock == "" {
@@ -50,7 +58,6 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-
 	if err := os.Chmod(sock, 0666); err != nil {
 		log.Fatal(err)
 	}
