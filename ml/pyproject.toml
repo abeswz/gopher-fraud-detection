@@ -3,6 +3,11 @@ name = "rinha-ml"
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
-    "numpy>=1.26,<2",
-    "faiss-gpu>=1.7",
+    "numpy>=1.26",
+    "cuml-cu12>=24.0",
+    "cupy-cuda12x>=13.0",
 ]
+
+[[tool.uv.index]]
+name = "nvidia"
+url = "https://pypi.nvidia.com"

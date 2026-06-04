@@ -3,8 +3,9 @@ import json
 import struct
 from pathlib import Path
 
-import faiss
+import cupy as cp
 import numpy as np
+from cuml.cluster import KMeans
 
 N_CLUSTERS = 8000
 N_INIT     = 10
@@ -15,30 +16,27 @@ def build_ivf(vectors, labels, dst):
     n = len(labels)
     vectors_16 = np.zeros((n, 16), dtype=np.float32)
     vectors_16[:, :14] = vectors
-    vectors = np.ascontiguousarray(vectors_16)
+    vectors_gpu = cp.asarray(vectors_16, dtype=cp.float32)
 
-    print(f"Fitting KMeans (GPU) with {N_CLUSTERS} clusters, nredo={N_INIT}...")
-    km = faiss.Kmeans(
-        d=16,
-        k=N_CLUSTERS,
-        niter=300,
-        nredo=N_INIT,
-        verbose=True,
-        gpu=True,
-        seed=42,
+    print(f"Fitting KMeans (cuML scalable-k-means++) with {N_CLUSTERS} clusters, n_init={N_INIT}...")
+    km = KMeans(
+        n_clusters=N_CLUSTERS,
+        init='scalable-k-means++',
+        n_init=N_INIT,
+        max_iter=300,
+        random_state=42,
+        output_type='numpy',
     )
-    km.train(vectors)
-    centroids = km.centroids.astype(np.float32)  # (N_CLUSTERS, 16)
+    km.fit(vectors_gpu)
+    centroids   = km.cluster_centers_.astype(np.float32)  # (N_CLUSTERS, 16)
+    assignments = km.labels_.astype(np.int32)             # (n,)
     print(f"KMeans done. Centroids: {centroids.shape}")
 
-    _, assignments_2d = km.index.search(vectors, 1)
-    assignments = assignments_2d.reshape(-1).astype(np.int32)
+    sort_idx       = np.argsort(assignments, kind="stable")
+    vectors_sorted = vectors_16[sort_idx]
+    labels_sorted  = labels[sort_idx]
 
-    sort_idx = np.argsort(assignments, kind="stable")
-    vectors_sorted = vectors[sort_idx]
-    labels_sorted = labels[sort_idx]
-
-    cluster_sizes = np.bincount(assignments, minlength=N_CLUSTERS).astype(np.uint32)
+    cluster_sizes  = np.bincount(assignments, minlength=N_CLUSTERS).astype(np.uint32)
     cluster_starts = np.zeros(N_CLUSTERS, dtype=np.uint32)
     cluster_starts[1:] = np.cumsum(cluster_sizes[:-1])
 
@@ -66,8 +64,8 @@ def build_ivf(vectors, labels, dst):
 
 def main():
     root = Path(__file__).parent.parent
-    src = root / "resources" / "references.json.gz"
-    dst = root / "index" / "references.bin"
+    src  = root / "resources" / "references.json.gz"
+    dst  = root / "index" / "references.bin"
     dst.parent.mkdir(exist_ok=True)
 
     print("Loading records...")
@@ -78,7 +76,7 @@ def main():
     print(f"Loaded {n} records")
 
     vectors = np.array([rec["vector"] for rec in records], dtype=np.float32)
-    labels = np.array(
+    labels  = np.array(
         [1 if rec["label"] == "fraud" else 0 for rec in records], dtype=np.uint8
     )
 
