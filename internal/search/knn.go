@@ -1,7 +1,7 @@
 package search
 
 const (
-	nprobe   = 2
+	nprobe   = 20
 	invScale = float32(1.0 / 10000.0) // multiply is cheaper than divide
 )
 
