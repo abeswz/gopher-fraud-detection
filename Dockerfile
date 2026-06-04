@@ -26,7 +26,8 @@ COPY index/ /index/
 
 COPY resources/ /resources/
 
-ENV INDEX_PATH=/index/references.bin \
+ENV FIRST_TX_INDEX_PATH=/index/first_tx.ivfh \
+    SUBSEQ_INDEX_PATH=/index/subsequent_tx.ivfh \
     NORM_PATH=/resources/normalization.json \
     MCC_PATH=/resources/mcc_risk.json
 
