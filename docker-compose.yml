@@ -27,7 +27,6 @@ volumes:
 services:
   lb:
     image: haproxy:alpine
-    cpuset: "2,3"
     restart: unless-stopped
     ports:
       - "9999:9999"
@@ -47,13 +46,11 @@ services:
 
   api1:
     <<: *api
-    cpuset: "0"
     environment:
       - SOCK=/run/sock/api1.sock
 
   api2:
     <<: *api
-    cpuset: "1"
     environment:
       - SOCK=/run/sock/api2.sock
 
