@@ -1,18 +1,14 @@
 # PROGRESS
 
-**Last updated:** 2026-06-05 (CPU redistrib — HAProxy bottleneck eliminated)
+**Last updated:** 2026-06-05 (p99.9 investigation — two-worker epoll, monitoring active)
 
 ## Status
 
-Detection perfeita (FP:0, FN:0) local e remoto. **Score local = 6000 (MAX)** após redistribuição de CPU que eliminou throttling do HAProxy.
+Detection perfeita (FP:0, FN:0). **Score local = 6000 (MAX)**. Objetivo atual: p99.9 < 1ms para posição top 10 nacional.
 
-**Aguardando rebuild de índice para AoS (f99743d) — commit não afeta CPU redistrib.**
-
-**Após rebuild:** `make bench-monitor` para confirmar, depois submission com novo docker-compose.
-
-**Current local: 6000 (MAX)** (p99=0.311ms, FP=0, FN=0, ERR=0 — stress test 5000 req/s)
+**Current local:** p99=0.297ms, p99.9=1.432ms, max=11.9ms, score=6000
 **Last remote: +4353** (p99=44.27ms, FP=0, FN=0 — commit 079bed0)
-**Pending remote:** CPU redistrib (lb=0.20, api=0.40) + AVX2 + AoS
+**Pending remote:** LB próprio + CAP_SYS_NICE + two-worker epoll
 
 ---
 
@@ -68,9 +64,70 @@ Server: raw epoll, GOMAXPROCS(1), GC off (`SetGCPercent(-1)`), `SetMemoryLimit(1
 
 ---
 
-## Bottleneck analysis
+## p99.9 Investigation — estado atual (2026-06-05)
 
-### HAProxy throttling — root cause identificado e resolvido
+### O que o monitoring confirmou (100% certo)
+
+| Métrica | Valor | Fonte |
+|---------|-------|-------|
+| `handleRequest` max | 2ms (1 req em 161k) | histogram interno |
+| `handleRequest` p99 | < 500µs | histogram interno |
+| `slow event cycle` (> 5ms) | **zero** | monitor log |
+| CFS throttle | **zero** | `/sys/fs/cgroup/cpu.stat` |
+| GC pauses | **zero** | `GODEBUG=gctrace=1` |
+| SCHED_FIFO | **ativo** (com `CAP_SYS_NICE`) | log startup |
+
+**Conclusão:** o server nunca é lento internamente. O p99.9=1.4ms é latência acumulada *antes* de `handleRequest` começar — tempo de fila no epoll loop.
+
+---
+
+### Teorias para p99.9 = 1.4ms
+
+#### Teoria 1 — Serialização epoll (batch queueing) ← MAIS PROVÁVEL
+
+`epoll_wait` retorna N eventos, todos processados em série antes do próximo `epoll_wait`. Um request que chega quando o worker está processando outros espera na fila do kernel.
+
+```
+burst de 14 eventos × 100µs = 1.4ms de espera para o 14º
+```
+
+**Evidência:** p99.9 caiu de ~1.9ms → 1.4ms ao dobrar workers (de 1 para 2). Cada worker tem ~metade das connections → bursts menores → menos fila.
+
+**Previsão se verdadeiro:** mais workers → p99.9 proporcional. Com 4 workers: ~0.7ms. Com 8: ~0.35ms. Mas CPU é o limite (0.45 por instância).
+
+#### Teoria 2 — epoll_wait timeout 1ms ← CONTRIBUI
+
+`epoll_wait(timeout=1ms)`: se um request chega logo após `epoll_wait` começar a esperar, ele aguarda até 1ms para ser notificado. Com processamento (~100µs): total ≈ 1.1ms.
+
+**Evidência:** p99.9 ≈ 1.4ms ≈ 1ms (timeout) + 0.4ms (processamento).
+
+**Fix possível:** reduzir timeout para 0.5ms → p99.9 esperado ≈ 0.9ms. Risco: mais syscalls, mais CPU.
+
+**Nota:** timeout=0 (busy-wait) consumiria 100% do CPU e causaria CFS throttle — pior.
+
+#### Teoria 3 — Overhead de monitoring no hot path ← PEQUENO MAS REAL
+
+Duas chamadas `time.Now()` por request + `recordLat()` adicionam ~50-200ns. P99 regrediu de 0.297ms → 0.427ms após adicionar monitoring. O overhead afeta p99 mais que p99.9.
+
+**Fix:** remover monitoring do hot path antes de submission. Só manter logs de erro.
+
+#### Teoria 4 — Contention de 3 threads SCHED_FIFO no mesmo CPU budget
+
+Com 3 threads SCHED_FIFO (receiver + 2 workers) e 0.45 CPU, o kernel time-shares entre eles. A troca de contexto entre workers adiciona latência variável.
+
+**Evidência fraca** — o receiver quase nunca roda (connections são keep-alive após warmup).
+
+---
+
+### Plano de ataque para p99.9 < 1ms
+
+**Passo 1 (baixo risco):** remover `time.Now()` do hot path de monitoring. Medir impacto em p99.
+**Passo 2 (médio risco):** reduzir `epoll_wait` timeout de 1ms → 0.5ms. Medir CPU impact.
+**Passo 3 (se necessário):** testar 4 workers (`numWorkers=4`, `GOMAXPROCS` ajustado).
+
+---
+
+### HAProxy throttling — root cause identificado e resolvido (histórico)
 
 Monitoring com `docker stats` + HAProxy stats CSV durante stress test revelou:
 
