@@ -1,20 +1,18 @@
 # PROGRESS
 
-**Last updated:** 2026-06-05 (post-AoS refactor)
+**Last updated:** 2026-06-05 (CPU redistrib — HAProxy bottleneck eliminated)
 
 ## Status
 
-Detection perfeita (FP:0, FN:0) local e remoto. Remote P99=38ms dominado por CFS throttling: servidor consome budget de 0.45 CPU antes do fim do período, causando espera de até ~100ms. Confirmado localmente com `test/stress.js` — p99=42ms sob carga extrema (3000+ req/s).
+Detection perfeita (FP:0, FN:0) local e remoto. **Score local = 6000 (MAX)** após redistribuição de CPU que eliminou throttling do HAProxy.
 
-**Duas otimizações recentes em main, aguardando rebuild de índice:**
-1. `computeClusterBatch8` AVX2 (commit 30f0c53) — cluster bbox 13× mais rápido
-2. AoS flatVec (commit f99743d) — elimina gather loop no scan de vetores
+**Aguardando rebuild de índice para AoS (f99743d) — commit não afeta CPU redistrib.**
 
-**Após rebuild:** `make bench-stress` para medir localmente, depois submission.
+**Após rebuild:** `make bench-monitor` para confirmar, depois submission com novo docker-compose.
 
-**Current local: 6000 (MAX)** (p99=0.35ms, FP=0, FN=0, ERR=0 — pré-AoS)
-**Last remote: +4411** (p99=38.75ms, FP=0, FN=0 — commit f20a433)
-**Pending remote: commit 30f0c53** (AVX2; issue #9111)
+**Current local: 6000 (MAX)** (p99=0.311ms, FP=0, FN=0, ERR=0 — stress test 5000 req/s)
+**Last remote: +4353** (p99=44.27ms, FP=0, FN=0 — commit 079bed0)
+**Pending remote:** CPU redistrib (lb=0.20, api=0.40) + AVX2 + AoS
 
 ---
 
@@ -26,7 +24,9 @@ Client → HAProxy :9999 (TCP round-robin)
            └── api2  unix:/run/sock/api2.sock
 ```
 
-Each instance: 168 MB RAM, 0.45 CPU. HAProxy: 14 MB, 0.10 CPU. Total: 1 CPU, 350 MB.
+**Resource budget** (hard limits: 1 CPU, 350 MB total):
+- Each API instance: 168 MB RAM, **0.40 CPU** (era 0.45)
+- HAProxy: 14 MB RAM, **0.20 CPU** (era 0.10) ← chave do ganho
 
 ### Fraud pipeline per request
 
@@ -68,9 +68,26 @@ Server: raw epoll, GOMAXPROCS(1), GC off (`SetGCPercent(-1)`), `SetMemoryLimit(1
 
 ---
 
-## Bottleneck analysis (confirmado via stress test)
+## Bottleneck analysis
 
-Root cause do remote P99=38ms: **CFS throttling**. Stress test local (`test/stress.js`, 3000→5000 req/s) replicou exatamente o cenário: p99=42ms com p50=0.16ms. A maioria das requisições é rápida; a cauda longa vem de lotes que esgotam o budget de 0.45 CPU antes do próximo período CFS (~100ms).
+### HAProxy throttling — root cause identificado e resolvido
+
+Monitoring com `docker stats` + HAProxy stats CSV durante stress test revelou:
+
+| Service | Peak CPU% | Limit% | % of Limit |
+|---------|-----------|--------|-----------|
+| lb | 10.30% | 10% (0.10 core) | **103% → THROTTLED** |
+| api1 | 9.28% | 45% (0.45 core) | 21% — OK |
+| api2 | 9.42% | 45% (0.45 core) | 21% — OK |
+
+HAProxy com 0.10 CPU + nbthread=1 saturava a ~3000 req/s. APIs tinham 80% de budget sobrando. Redistribuição para lb=0.20/api=0.40 eliminou throttling:
+
+| Antes | Depois |
+|-------|--------|
+| p99=26.7ms | p99=0.311ms |
+| score=4573 | **score=6000 (MAX)** |
+
+CFS throttle do lb causava pausas de ~100ms quando o budget de 0.10 CPU se esgotava. Mesmo sem queue no HAProxy (qcur=0), o throttle causava a cauda longa.
 
 ### Otimizações aplicadas (em ordem)
 
@@ -79,16 +96,8 @@ Root cause do remote P99=38ms: **CFS throttling**. Stress test local (`test/stre
 | f20a433 | flat IVF + epoll + GC off | local 0.43ms, remote 38ms |
 | 30f0c53 | AVX2 `computeClusterBatch8` (13×) + `distL2i16q` no scan | local 0.35ms |
 | f99743d | AoS flatVec — elimina gather loop no scan | aguarda rebuild |
-
-### computeClusterPacked (resolvido)
-
-`computeClusterBatch8`: 8 clusters/iter via SIMD em `bpsoaMin/bpsoaMax`. K=2048 → 256 grupos × 5ns = 1.3μs vs ~17μs escalar. **~13× mais rápido.**
-
-### scanClusterGather — gather eliminado (f99743d)
-
-**Antes (SoA):** 7 leituras espalhadas por vetor (`pairs[p][2*vi]`). Para 12 probes × 488 vetores: ~41K acessos a 7 arrays distintos de 4MB → cache thrashing.
-
-**Depois (AoS):** `distL2i16q(ix.flatVec, vi*16, q)` direto. Vetor contíguo (32 bytes), scan sequencial dentro do cluster → L1-warm. Estimativa: 4-8× speedup no scan.
+| 80a5fa2 | HAProxy stats endpoint (port 8404, local only) | monitoring infra |
+| pending | CPU redistrib: lb=0.20, api=0.40 | **p99=0.311ms, score=6000** |
 
 ---
 
@@ -103,9 +112,11 @@ Root cause do remote P99=38ms: **CFS throttling**. Stress test local (`test/stre
 | 2026-06-04 | +5729 | 0.394ms | — | 4 | 1 | IVF_H2 + bbox pruning |
 | 2026-06-04 | +5909 | 0.606ms | — | 1 | 0 | 4-way split by unknown_merchant |
 | 2026-06-05 | +4084 | — | 59ms | 2 | 0 | remote: old IVFH (commit 491f131) |
-| 2026-06-05 | +4411 | 0.43ms | 38ms | 0 | 0 | **flat IVF + epoll + GC off (commit f20a433)** |
+| 2026-06-05 | +4411 | 0.43ms | 38ms | 0 | 0 | flat IVF + epoll + GC off (commit f20a433) |
 | 2026-06-05 | 6000 | 0.43ms | — | 0 | 0 | local max (partition pre-partitioning) |
 | 2026-06-05 | — | 0.35ms | pending | 0 | 0 | AVX2 bbox batch + distL2i16q (commit 30f0c53) |
+| 2026-06-05 | +4353 | — | 44.27ms | 0 | 0 | commit 079bed0 (pré CPU redistrib) |
+| 2026-06-05 | **6000** | **0.311ms** | pending | 0 | 0 | **CPU redistrib: lb=0.20, api=0.40** |
 
 ---
 
