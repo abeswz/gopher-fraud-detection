@@ -30,6 +30,7 @@ services:
     restart: unless-stopped
     ports:
       - "9999:9999"
+      - "127.0.0.1:8404:8404"
     volumes:
       - sock:/run/sock
       - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
