@@ -1,0 +1,7 @@
+{
+    "participants": ["abesnow"],
+    "social": ["https://github.com/abeswz", "https://www.linkedin.com/in/anves"],
+    "source-code-repo": "https://github.com/abeswz/gopher-fraud-detection",
+    "stack": ["go", "haproxy"],
+    "open_to_work": false
+}

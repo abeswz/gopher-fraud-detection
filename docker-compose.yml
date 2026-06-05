@@ -1,0 +1,70 @@
+x-api: &api
+  image: ghcr.io/abeswz/gopher-rinha-fraud-detection-2026:b6597f8
+  restart: unless-stopped
+  ulimits:
+    memlock: -1
+    nofile:
+      soft: 65535
+      hard: 65535
+  volumes:
+    - sock:/run/sock
+  networks:
+    - fraud-net
+  deploy:
+    resources:
+      limits:
+        cpus: "0.40"
+        memory: "168MB"
+
+volumes:
+  sock:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=4m,mode=0777
+
+services:
+  lb:
+    image: ghcr.io/abeswz/gopher-rinha-fraud-detection-2026:b6597f8
+    entrypoint: ["/lb"]
+    restart: unless-stopped
+    ports:
+      - "9999:9999"
+    volumes:
+      - sock:/run/sock
+    networks:
+      - fraud-net
+    depends_on:
+      - api1
+      - api2
+    environment:
+      - PORT=9999
+      - UPSTREAMS=/run/sock/api1.sock,/run/sock/api2.sock
+    deploy:
+      resources:
+        limits:
+          cpus: "0.20"
+          memory: "14MB"
+
+  api1:
+    <<: *api
+    environment:
+      - SOCK=/run/sock/api1.sock
+      - FIRST_KNOWN_INDEX_PATH=/app/index/first_known.ivfh
+      - FIRST_UNKNOWN_INDEX_PATH=/app/index/first_unknown.ivfh
+      - SUBSEQ_KNOWN_INDEX_PATH=/app/index/subseq_known.ivfh
+      - SUBSEQ_UNKNOWN_INDEX_PATH=/app/index/subseq_unknown.ivfh
+
+  api2:
+    <<: *api
+    environment:
+      - SOCK=/run/sock/api2.sock
+      - FIRST_KNOWN_INDEX_PATH=/app/index/first_known.ivfh
+      - FIRST_UNKNOWN_INDEX_PATH=/app/index/first_unknown.ivfh
+      - SUBSEQ_KNOWN_INDEX_PATH=/app/index/subseq_known.ivfh
+      - SUBSEQ_UNKNOWN_INDEX_PATH=/app/index/subseq_unknown.ivfh
+
+networks:
+  fraud-net:
+    driver: bridge
