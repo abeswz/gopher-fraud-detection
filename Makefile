@@ -4,7 +4,7 @@ READY_TIMEOUT := 300
 .PHONY: index bench bench-fast profile profile-parallel submission
 
 index:
-	uv run --project ml ml/build_index.py
+	go run ./cmd/build_index/ resources/references.json.gz index/
 
 bench-fast:
 	docker compose --compatibility down
