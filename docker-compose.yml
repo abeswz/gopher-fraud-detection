@@ -27,7 +27,7 @@ volumes:
 services:
   lb:
     build: .
-    command: ["/lb"]
+    entrypoint: ["/lb"]
     restart: unless-stopped
     ports:
       - "9999:9999"
