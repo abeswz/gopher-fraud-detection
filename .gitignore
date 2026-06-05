@@ -49,6 +49,8 @@ coverage/
 .air.toml
 
 __debug_bin
+build_index
+api
 
 *.bak
 *.old
