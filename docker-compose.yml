@@ -26,18 +26,21 @@ volumes:
 
 services:
   lb:
-    image: haproxy:alpine
+    build: .
+    command: ["/lb"]
     restart: unless-stopped
     ports:
       - "9999:9999"
     volumes:
       - sock:/run/sock
-      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
     networks:
       - fraud-net
     depends_on:
       - api1
       - api2
+    environment:
+      - PORT=9999
+      - UPSTREAMS=/run/sock/api1.sock,/run/sock/api2.sock
     deploy:
       resources:
         limits:

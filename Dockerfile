@@ -18,11 +18,18 @@ RUN go build \
     -buildvcs=false \
     -ldflags="-s -w" \
     -o fraud-api \
-    ./cmd/api
+    ./cmd/api && \
+    go build \
+    -trimpath \
+    -buildvcs=false \
+    -ldflags="-s -w" \
+    -o lb \
+    ./cmd/lb
 
 FROM gcr.io/distroless/static-debian12
 
 COPY --from=builder /app/fraud-api /fraud-api
+COPY --from=builder /app/lb /lb
 COPY index/ /app/index/
 COPY resources/ /app/resources/
 

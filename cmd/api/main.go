@@ -193,6 +193,8 @@ func serverLoop(listenFD int) {
 	tryRealtimePriority()
 
 	events := make([]unix.EpollEvent, maxEvents)
+	oob := make([]byte, 256) // enough for 16 fds via SCM_RIGHTS
+	var oobBuf [1]byte
 	for {
 		n, err := unix.EpollWait(epollFD, events, 1)
 		if err == unix.EINTR {
@@ -201,19 +203,32 @@ func serverLoop(listenFD int) {
 		for i := 0; i < n; i++ {
 			fd := int(events[i].Fd)
 			if fd == listenFD {
-				cfd, _, err := unix.Accept4(listenFD, unix.SOCK_NONBLOCK|unix.SOCK_CLOEXEC)
-				if err != nil {
-					continue
+				for {
+					_, oobn, _, _, err := unix.Recvmsg(listenFD, oobBuf[:], oob, unix.MSG_DONTWAIT)
+					if err != nil {
+						break
+					}
+					scms, err := unix.ParseSocketControlMessage(oob[:oobn])
+					if err != nil {
+						break
+					}
+					for _, scm := range scms {
+						fds, err := unix.ParseUnixRights(&scm)
+						if err != nil {
+							continue
+						}
+						for _, cfd := range fds {
+							if cfd >= maxFDs {
+								unix.Close(cfd)
+								continue
+							}
+							unix.SetsockoptInt(cfd, unix.SOL_TCP, unix.TCP_QUICKACK, 1)
+							states[cfd].pos = 0
+							unix.EpollCtl(epollFD, unix.EPOLL_CTL_ADD, cfd,
+								&unix.EpollEvent{Events: unix.EPOLLIN | unix.EPOLLRDHUP, Fd: int32(cfd)})
+						}
+					}
 				}
-				if cfd >= maxFDs {
-					unix.Close(cfd)
-					continue
-				}
-				unix.SetsockoptInt(cfd, unix.SOL_TCP, unix.TCP_NODELAY, 1)
-				unix.SetsockoptInt(cfd, unix.SOL_TCP, unix.TCP_QUICKACK, 1)
-				states[cfd].pos = 0
-				unix.EpollCtl(epollFD, unix.EPOLL_CTL_ADD, cfd,
-					&unix.EpollEvent{Events: unix.EPOLLIN | unix.EPOLLRDHUP, Fd: int32(cfd)})
 			} else {
 				handleClientEvent(fd)
 			}
@@ -266,7 +281,7 @@ func main() {
 	}
 	slog.Info("loaded partitions", "count", loaded)
 
-	listenFD, err := unix.Socket(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_NONBLOCK|unix.SOCK_CLOEXEC, 0)
+	listenFD, err := unix.Socket(unix.AF_UNIX, unix.SOCK_DGRAM|unix.SOCK_NONBLOCK|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
 		die("socket: " + err.Error())
 	}
@@ -275,9 +290,6 @@ func main() {
 		die("bind: " + err.Error())
 	}
 	unix.Chmod(sockPath, 0o666)
-	if err := unix.Listen(listenFD, 128); err != nil {
-		die("listen: " + err.Error())
-	}
 
 	epollFD, err = unix.EpollCreate1(unix.EPOLL_CLOEXEC)
 	if err != nil {
