@@ -21,6 +21,7 @@ type IVFHIndex struct {
 	K1, K2, N    int
 	DSafe        float32 // stored as L2, not L2²
 	DSafeSq      float32
+	DSafeSqI32   int32   // DSafe² in int16-scaled units (×10000)²; capped at MaxInt32
 	NCoarseProbe int
 	MacroCentroids []float32
 	MicroCentroids []float32
@@ -63,6 +64,13 @@ func LoadIVFHIndex(path string, nCoarseProbe int) (*IVFHIndex, error) {
 	}
 
 	dSafe := math.Float32frombits(binary.LittleEndian.Uint32(data[4:8]))
+	dSafeSqF64 := float64(dSafe*10000) * float64(dSafe*10000)
+	var dSafeSqI32 int32
+	if dSafeSqF64 >= float64(math.MaxInt32) {
+		dSafeSqI32 = math.MaxInt32
+	} else {
+		dSafeSqI32 = int32(math.Round(dSafeSqF64))
+	}
 	k1 := int(binary.LittleEndian.Uint32(data[8:12]))
 	k2 := int(binary.LittleEndian.Uint32(data[12:16]))
 	n := int(binary.LittleEndian.Uint32(data[16:20]))
@@ -110,6 +118,7 @@ func LoadIVFHIndex(path string, nCoarseProbe int) (*IVFHIndex, error) {
 		K1: k1, K2: k2, N: n,
 		DSafe:          dSafe,
 		DSafeSq:        dSafe * dSafe,
+		DSafeSqI32:     dSafeSqI32,
 		NCoarseProbe:   nCoarseProbe,
 		MacroCentroids: macroCentroids,
 		MicroCentroids: microCentroids,

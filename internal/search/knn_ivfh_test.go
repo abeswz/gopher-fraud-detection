@@ -1,6 +1,7 @@
 package search
 
 import (
+	"math"
 	"testing"
 )
 
@@ -127,7 +128,7 @@ func TestIVFHKNN_FastExitDSafe(t *testing.T) {
 	// 5 legit vecs at (0,...) → dist to query (0,...) = 0
 	idx := &IVFHIndex{
 		K1: K1, K2: K2, N: 5,
-		DSafe: 10.0, DSafeSq: 100.0, // very large DSafe → always exits
+		DSafe: 10.0, DSafeSq: 100.0, DSafeSqI32: math.MaxInt32, // very large DSafe → always exits
 		NCoarseProbe:   1,
 		MacroCentroids: make([]float32, 16),
 		MicroCentroids: make([]float32, 16),

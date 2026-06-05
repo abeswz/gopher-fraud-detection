@@ -3,9 +3,10 @@ package search
 import "math"
 
 const invScale = float32(1.0 / 10000.0) // multiply is cheaper than divide
+const invScaleSq = invScale * invScale   // for centroid-pruning in int32 path
 
 type knnEntry struct {
-	dist  float32
+	dist  int32
 	label uint8
 }
 
@@ -14,7 +15,7 @@ type centEntry struct {
 	id   int
 }
 
-func knnFindMax(entries []knnEntry) (maxDist float32, maxPos int) {
+func knnFindMax(entries []knnEntry) (maxDist int32, maxPos int) {
 	maxDist = entries[0].dist
 	maxPos = 0
 	for i := 1; i < len(entries); i++ {
@@ -167,13 +168,20 @@ func (idx *IVFHIndex) KNN(query [16]float32, k int) int {
 		topMicro[j+1] = key
 	}
 
-	return ivfhScanVectors(idx, topMicro, &query, k, q0)
+	return ivfhScanVectors(idx, topMicro, &query, k)
 }
 
-func ivfhScanVectors(idx *IVFHIndex, topMicro []centEntry, query *[16]float32, k int, q0 float32) int {
+func ivfhScanVectors(idx *IVFHIndex, topMicro []centEntry, query *[16]float32, k int) int {
+	// Convert query float32→int16 once; all vector distances computed in int32.
+	var qi16 [16]int16
+	for i, v := range query {
+		qi16[i] = int16(math.Round(float64(v) * 10000))
+	}
+	q0i16 := int32(qi16[0])
+
 	var topArr [5]knnEntry
 	top := topArr[:0]
-	maxDist := float32(0)
+	maxDist := int32(0)
 	maxPos := 0
 
 	vecs := idx.Vectors
@@ -188,11 +196,11 @@ func ivfhScanVectors(idx *IVFHIndex, topMicro []centEntry, query *[16]float32, k
 
 		for vi := start; vi < start+size; vi, base = vi+1, base+dims {
 			_ = vecs[base+15]
-			d0 := q0 - float32(vecs[base])*invScale
+			d0 := q0i16 - int32(vecs[base])
 			if len(top) == k && d0*d0 >= maxDist {
 				continue
 			}
-			dist := distL2i16_16(vecs, base, query)
+			dist := distL2i16q(vecs, base, &qi16)
 			if len(top) < k {
 				top = append(top, knnEntry{dist, labs[vi]})
 				if len(top) == k {
@@ -210,7 +218,7 @@ func ivfhScanVectors(idx *IVFHIndex, topMicro []centEntry, query *[16]float32, k
 		if fraudCount == 5 {
 			return 5
 		}
-		if fraudCount == 0 && maxDist < idx.DSafeSq {
+		if fraudCount == 0 && maxDist < idx.DSafeSqI32 {
 			return 0
 		}
 	}
@@ -221,7 +229,7 @@ func ivfhScanVectors(idx *IVFHIndex, topMicro []centEntry, query *[16]float32, k
 		dCentroid := sqrt32(ce.dist)
 		radius := idx.Radii[ce.id]
 		lowerBound := dCentroid - radius
-		if lowerBound > 0 && lowerBound*lowerBound > maxDist {
+		if lowerBound > 0 && lowerBound*lowerBound > float32(maxDist)*invScaleSq {
 			break
 		}
 
@@ -231,11 +239,11 @@ func ivfhScanVectors(idx *IVFHIndex, topMicro []centEntry, query *[16]float32, k
 
 		for vi := start; vi < start+size; vi, base = vi+1, base+dims {
 			_ = vecs[base+15]
-			d0 := q0 - float32(vecs[base])*invScale
+			d0 := q0i16 - int32(vecs[base])
 			if len(top) == k && d0*d0 >= maxDist {
 				continue
 			}
-			dist := distL2i16_16(vecs, base, query)
+			dist := distL2i16q(vecs, base, &qi16)
 			if len(top) < k {
 				top = append(top, knnEntry{dist, labs[vi]})
 				if len(top) == k {
@@ -259,7 +267,7 @@ func ivfhScanVectors(idx *IVFHIndex, topMicro []centEntry, query *[16]float32, k
 			dCentroid := sqrt32(ce.dist)
 			radius := idx.Radii[ce.id]
 			lowerBound := dCentroid - radius
-			if lowerBound > 0 && lowerBound*lowerBound > maxDist {
+			if lowerBound > 0 && lowerBound*lowerBound > float32(maxDist)*invScaleSq {
 				break
 			}
 
@@ -269,11 +277,11 @@ func ivfhScanVectors(idx *IVFHIndex, topMicro []centEntry, query *[16]float32, k
 
 			for vi := start; vi < start+size; vi, base = vi+1, base+dims {
 				_ = vecs[base+15]
-				d0 := q0 - float32(vecs[base])*invScale
+				d0 := q0i16 - int32(vecs[base])
 				if len(top) == k && d0*d0 >= maxDist {
 					continue
 				}
-				dist := distL2i16_16(vecs, base, query)
+				dist := distL2i16q(vecs, base, &qi16)
 				if len(top) < k {
 					top = append(top, knnEntry{dist, labs[vi]})
 					if len(top) == k {
@@ -313,6 +321,13 @@ func (idx *IVFHIndex) knnFullMacroRepair(query *[16]float32, k int) int {
 	q13 := (*query)[13]
 	q14 := (*query)[14]
 	q15 := (*query)[15]
+
+	// Convert query for int16-space vector scan.
+	var qi16 [16]int16
+	for i, v := range query {
+		qi16[i] = int16(math.Round(float64(v) * 10000))
+	}
+	q0i16 := int32(qi16[0])
 
 	nMicro := min(nprobeThreshRepair, idx.K1*idx.K2)
 	var topMicroArr [nprobeThreshRepair]centEntry
@@ -368,7 +383,7 @@ func (idx *IVFHIndex) knnFullMacroRepair(query *[16]float32, k int) int {
 
 	var topArr [5]knnEntry
 	top := topArr[:0]
-	maxDist := float32(0)
+	maxDist := int32(0)
 	maxPos := 0
 
 	vecs := idx.Vectors
@@ -378,7 +393,7 @@ func (idx *IVFHIndex) knnFullMacroRepair(query *[16]float32, k int) int {
 		dCentroid := sqrt32(ce.dist)
 		radius := idx.Radii[ce.id]
 		lowerBound := dCentroid - radius
-		if len(top) == k && lowerBound > 0 && lowerBound*lowerBound > maxDist {
+		if len(top) == k && lowerBound > 0 && lowerBound*lowerBound > float32(maxDist)*invScaleSq {
 			break
 		}
 
@@ -388,11 +403,11 @@ func (idx *IVFHIndex) knnFullMacroRepair(query *[16]float32, k int) int {
 
 		for vi := start; vi < start+size; vi, base = vi+1, base+dims {
 			_ = vecs[base+15]
-			d0 := q0 - float32(vecs[base])*invScale
+			d0 := q0i16 - int32(vecs[base])
 			if len(top) == k && d0*d0 >= maxDist {
 				continue
 			}
-			dist := distL2i16_16(vecs, base, query)
+			dist := distL2i16q(vecs, base, &qi16)
 			if len(top) < k {
 				top = append(top, knnEntry{dist, labs[vi]})
 				if len(top) == k {
