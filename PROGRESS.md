@@ -1,16 +1,15 @@
 # PROGRESS
 
-**Last updated:** 2026-06-04
+**Last updated:** 2026-06-05
 
 ## Status
 
-Partitioning strategy changed from `{is_online, card_present}` (terminal type) to `{unknown_merchant}` (dim 11), applied to both first_tx and subsequent_tx splits. This creates 4 more homogeneous sub-indexes → fewer IVF cache misses → FP 4→1, FN 1→0, score 5729→5909.
+Flat IVF rewrite complete. Detection is perfect (FP:0, FN:0) locally and remotely. P99 improved 59ms → 38ms remotely, but still far from local (0.43ms). Gap caused by queuing + slow pure-Go `computeClusterPacked` over large partitions (tag 9: 1M refs, K=2048).
 
-**Current local: +5909** (p99=0.606ms, FP=1, FN=0, ERR=0)
-**Previous best local: +5729** (p99=0.394ms, FP=4, FN=1, bbox pruning)
-Last remote: +3730 (p99=62ms, before GOMAXPROCS=1 fix — stale)
+**Current local: 6000 (MAX)** (p99=0.43ms, FP=0, FN=0, ERR=0)
+**Last remote: +4411** (p99=38.75ms, FP=0, FN=0 — commit f20a433)
 
-The 1 remaining FP is irreducible: even exhaustive int16 search returns fraud for this case, but float32 ground truth says legit. Int16 quantization error at the k=5 decision boundary.
+Primary bottleneck: `computeClusterPacked` scans all K clusters (up to 2048) in pure Go per query. With tag 9 at K=2048, this is ~344K comparisons before even scanning vectors. AVX2 batch (Task 10, deferred) would reduce this 8×.
 
 ---
 
@@ -23,98 +22,76 @@ Client → HAProxy :9999 (TCP round-robin)
 ```
 
 Each instance: 168 MB RAM, 0.45 CPU. HAProxy: 14 MB, 0.10 CPU. Total: 1 CPU, 350 MB.
-GOMAXPROCS=1 — prevents CFS throttling on 0.45 CPU quota.
 
 ### Fraud pipeline per request
 
 ```
-JSON decode → vectorize → [fastPath] → [RawTree] → IVF_H2 k-NN → response
+JSON decode → fastPath? → TagFromRequest → IvfIndex.Search → pre-rendered response
 ```
 
-Routes by `LastTx == nil` × `unknown_merchant`:
-- nil + known   → `first_known.ivfh`   (NCoarseProbeFirstKnown=12)
-- nil + unknown → `first_unknown.ivfh` (NCoarseProbeFirstUnknown=12)
-- non-nil + known   → `subseq_known.ivfh`   (NCoarseProbeSubseqKnown=16)
-- non-nil + unknown → `subseq_unknown.ivfh` (NCoarseProbeSubseqUnknown=16)
+4-bit tag partitions (16 slots, 12 populated): `card_present<<3 | is_online<<2 | unknown_merchant<<1 | has_last_tx`.
 
-`unknown_merchant` = `merchant.id` not in `customer.known_merchants` (linear scan, O(len)).
+Server: raw epoll, GOMAXPROCS(1), GC off (`SetGCPercent(-1)`), `SetMemoryLimit(160MiB)`, Mlockall, SCHED_FIFO.
 
 ---
 
 ## Index
 
-- **Algorithm:** IVF_H2 — 2-level hierarchical KMeans (cuML `scalable-k-means++`)
-- **Format:** IVFH binary (magic "IVFH")
-- **4 sub-indexes**, K1 auto-scaled via `choose_k1`, K2=32 (first_tx) or K2=16 (subseq)
-- **nprobeInit=8** (phase 1 fast), **nprobeMax=20** (phase 2 standard repair), **nprobeRepair=128** (phase 3 deep repair)
-- **nprobeThreshRepair=128** (full macro repair cap)
+- **Algorithm:** Flat IVF — adaptive K=n/300 clamped [64, 2048], Lloyd's 20 iters
+- **Format:** RNH4-IDX binary (SoA pair layout, bbox per cluster)
+- **12 partitions** built by Go `cmd/build_index` from `resources/references.json.gz`
+- **NProbeInitial=12**, repair on count ∈ [1,4] → sweep all clusters
+- **bboxMin/bboxMax** lower-bound pruning for early cluster skip
+- **sort-within-cluster**: vectors nearest centroid first → tighter worstKey early
 
-### Split rationale
+### Partition sizes (3M refs total)
 
-`unknown_merchant` (dim 11) is the strongest behavioral discriminator — vectors with the same known/unknown status form tighter clusters → KMeans centroids better aligned → fewer IVF approximation errors.
-
-- `first_tx` (~20% of data): null `last_transaction` sentinel at dims 5+6 = -1.0. Split by unknown_merchant → 2 sub-indexes.
-- `subseq_tx` (~80% of data): Split by unknown_merchant → 2 sub-indexes.
-
-### KNN phases (per query)
-
-1. **Macro scan** — compare all K1 centroids, keep top NCoarseProbe
-2. **Micro candidate selection** — scan K2 micro centroids per selected macro, keep top nprobeRepair (sorted ascending)
-3. **Phase 1 fast scan** — scan first 8 micro clusters; exit if fraudCount==5 or (fraudCount==0 && maxDist < DSafeSq)
-4. **Phase 2 standard repair** — scan clusters 8–19 with centroid+bbox pruning; exit if fraudCount==0
-5. **Phase 3 deep repair** — fraudCount 1–4: scan clusters 20–127 with centroid+bbox pruning
-6. **Full macro repair** — fraudCount≥3 after phase 3: re-rank top-128 micro clusters from all K1 macros
-
----
-
-## Accuracy progression
-
-| Config | Score | p99 | FP | FN |
-|--------|-------|-----|----|----|
-| flat IVF C=8000 nprobe=40 | 5687 | 0.679ms | 10 | 0 |
-| IVF_H2 K1=128/K2=32 NCoarseProbe=3/4 | 5526 | 0.385ms | 19 | 6 |
-| IVF_H2 + dynamic repair NCoarseProbe=6/8 | 5537 | ~0.39ms | 19 | 5 |
-| IVF_H2 K1=256/K2=16 NCoarseProbe=12/16 nprobeRepair=128 | 5729 | 0.542ms | 7 | 0 |
-| IVF_H2 + bbox pruning | 5729 | 0.394ms | 4 | 1 |
-| **4-way split by unknown_merchant** | **5909** | **0.606ms** | **1** | **0** |
+| tag | refs | K |
+|-----|------|---|
+| 0 | 27,887 | 92 |
+| 1 | 110,804 | 369 |
+| 2 | 4,314 | 64 |
+| 3 | 17,213 | 64 |
+| 4 | 121,436 | 404 |
+| 5 | 489,518 | 1631 |
+| 6 | 156,535 | 521 |
+| 7 | 627,331 | 2048 |
+| 8 | 250,253 | 834 |
+| 9 | 1,000,742 | 2048 |
+| 10 | 38,532 | 128 |
+| 11 | 155,435 | 518 |
 
 ---
 
-## What is implemented
+## Next bottleneck: remote P99
 
-- `cmd/api/main.go` — loads 4 IVFH indexes, serves unix socket
-- `internal/dto/fraud.go` — request/response types
-- `internal/vectorizer/vectorizer.go` — 14-dim → 16-dim padded feature vector
-- `internal/search/index.go` — `IVFHIndex` + `Index` interface
-- `internal/search/knn.go` — IVFHIndex.KNN (3-phase: fast → standard repair → deep repair → full macro repair)
-- `internal/service/fraud_detection.go` — 4-way routing by LastTx × unknown_merchant
-- `internal/handler/fraud_score.go` — HTTP handler
-- `ml/build_index.py` — IVF_H2 builder: 4-way split, boundary oversample, 2-level KMeans, D_safe, IVFH binary
-- Tests — 36 passing
+Local p99=0.43ms vs remote p99=38ms (88× gap). Causes:
 
----
+1. **computeClusterPacked pure Go** — O(K×14) per query. K=2048 for tags 7,9 → 28K comparisons before scanning any vector. This alone is ~1-2ms at 0.45 CPU.
+2. **Queuing** — GOMAXPROCS(1) serializes all requests per instance. High VU concurrency in k6 → P99 dominated by wait time.
 
-## Fixed constraints (spec — never change)
-
-- `k=5`: test labels generated with exact brute-force k=5. Changing k diverges from ground truth → more FP/FN.
-- `threshold=0.6`: explicitly fixed in `DETECTION_RULES.md`.
-- `fraud_score = fraudCount / 5.0`: always divides by 5.
+AVX2 `computeClusterPackedAVX2` (Task 10, planned) processes 8 clusters per iteration → ~8× speedup on cluster selection. Combined with `scanClusterBatchAVX2` (3-stage early exit, 8 vectors/iter) → estimated 5-10× total speedup → remote P99 <5ms.
 
 ---
 
 ## Score history
 
-| Date | Score | p99 | p99_score | FP | FN | Config |
-|------|-------|-----|-----------|----|----|--------|
-| 2026-05-30 | -6000 | 2002ms | -3000 | 0 | 0 | brute-force KNN |
-| 2026-05-30 | +5322 | 1.64ms | 2786 | 19 | 5 | IVF C=4000 nprobe=15 |
-| 2026-05-30 | +5536 | 0.65ms | 3000 (MAX) | 19 | 5 | nprobe=15 + KNN optimized |
-| 2026-05-31 | +4051 | 30.57ms | 1514 | 19 | 5 | **remote submission** |
-| 2026-05-31 | +5533 | 0.42ms | 3000 (MAX) | 20 | 5 | hybrid: fast_path → tree → IVF |
-| 2026-06-04 | +5687 | 0.679ms | 3000 (MAX) | 10 | 0 | cuML 8000c flat IVF nprobe=40 |
-| 2026-06-04 | +5526 | 0.385ms | 3000 (MAX) | 19 | 6 | IVF_H2 dual-split NCoarseProbe=3/4 |
-| 2026-06-04 | +5537 | ~0.39ms | 3000 (MAX) | 19 | 5 | IVF_H2 + 3-phase repair NCoarseProbe=6/8 |
-| 2026-06-04 | +5676 | 0.502ms | 3000 (MAX) | 8 | 1 | K1=256/K2=16 NCoarseProbe=8/12 nprobeRepair=96 |
-| 2026-06-04 | +5729 | 0.542ms | 3000 (MAX) | 7 | 0 | K1=256/K2=16 NCoarseProbe=12/16 nprobeRepair=128 |
-| 2026-06-04 | +5729 | 0.394ms | 3000 (MAX) | 4 | 1 | + bbox pruning (int16 box per micro-cluster) |
-| **2026-06-04** | **+5909** | **0.606ms** | **3000 (MAX)** | **1** | **0** | **4-way split by unknown_merchant** |
+| Date | Score | p99 local | p99 remote | FP | FN | Config |
+|------|-------|-----------|------------|----|----|--------|
+| 2026-05-30 | -6000 | — | 2002ms | 0 | 0 | brute-force KNN |
+| 2026-05-30 | +5536 | 0.65ms | — | 19 | 5 | IVF C=4000 nprobe=15 |
+| 2026-05-31 | +4051 | — | 30.57ms | 19 | 5 | remote: net/http + GC on |
+| 2026-06-04 | +5687 | 0.679ms | — | 10 | 0 | cuML 8000c flat IVF nprobe=40 |
+| 2026-06-04 | +5729 | 0.394ms | — | 4 | 1 | IVF_H2 + bbox pruning |
+| 2026-06-04 | +5909 | 0.606ms | — | 1 | 0 | 4-way split by unknown_merchant |
+| 2026-06-05 | +4084 | — | 59ms | 2 | 0 | remote: old IVFH (commit 491f131) |
+| 2026-06-05 | +4411 | 0.43ms | 38ms | 0 | 0 | **flat IVF + epoll + GC off (commit f20a433)** |
+| **2026-06-05** | **6000** | **0.43ms** | — | **0** | **0** | **local max (bug fix: partition pre-partitioning)** |
+
+---
+
+## Fixed constraints (spec — never change)
+
+- `k=5`: test labels generated with exact brute-force k=5.
+- `threshold=0.6`: fixed in `DETECTION_RULES.md`.
+- `fraud_score = fraudCount / 5.0`: always divides by 5.
