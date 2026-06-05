@@ -95,10 +95,10 @@ func main() {
 
 		offsets, order := search.CountingSortByCluster(assignments, k)
 		search.SortWithinClusters(part, cent, assignments, offsets, order)
-		bboxMin, bboxMax, pairArr, labels := search.BBoxPack(part, order, offsets, k)
+		bboxMin, bboxMax, flatVec, labels := search.BBoxPack(part, order, offsets, k)
 
 		outPath := outDir + "/index_p" + strconv.Itoa(tag) + ".bin"
-		if err := search.WriteIndexBin(outPath, len(part), offsets, bboxMin, bboxMax, pairArr, labels); err != nil {
+		if err := search.WriteIndexBin(outPath, len(part), offsets, bboxMin, bboxMax, flatVec, labels); err != nil {
 			log("write %s: %v", outPath, err)
 			os.Exit(1)
 		}

@@ -35,7 +35,7 @@ func buildTinyIndex(t *testing.T) *IvfIndex {
 	}
 	offsets, order := CountingSortByCluster(assignments, k)
 	SortWithinClusters(refs, cent, assignments, offsets, order)
-	bboxMin, bboxMax, pairArr, labels := BBoxPack(refs, order, offsets, k)
+	bboxMin, bboxMax, flatVec, labels := BBoxPack(refs, order, offsets, k)
 
 	ix := &IvfIndex{
 		NClusters:      k,
@@ -43,16 +43,8 @@ func buildTinyIndex(t *testing.T) *IvfIndex {
 		clusterOffsets: offsets,
 		bboxMin:        bboxMin,
 		bboxMax:        bboxMax,
+		flatVec:        flatVec,
 		labels:         labels,
-	}
-	for p := 0; p < NPairs; p++ {
-		i16 := make([]int16, 2*n+16)
-		for j := 0; j < n; j++ {
-			packed := pairArr[p][j]
-			i16[2*j] = int16(packed & 0xFFFF)
-			i16[2*j+1] = int16(uint32(packed) >> 16)
-		}
-		ix.pairs[p] = i16
 	}
 	ix.buildBPSOA()
 	return ix

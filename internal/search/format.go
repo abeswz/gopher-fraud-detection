@@ -28,7 +28,7 @@ const (
 	NProbeRepairMin = 1
 	NProbeRepairMax = 4
 
-	magic = "RNH4-IDX"
+	magic = "RNH5-IDX" // bumped: SoA pairs → AoS flatVec; rebuild index required
 )
 
 func bytesOf[T any](s []T) []byte {
@@ -54,19 +54,18 @@ func writePadded(w *bufio.Writer, b []byte) error {
 // WriteIndexBin serializes one partition's flat IVF index to path.
 // On-disk layout (sections zero-padded to 64 bytes, except labels+tail):
 //
-//	header           64B     magic | n_clusters | n_vectors
+//	header           64B      magic | n_clusters | n_vectors
 //	cluster_offsets  (K+1)*4
-//	bbox_min         K*16*2  int16[16] per cluster
+//	bbox_min         K*16*2   int16[16] per cluster
 //	bbox_max         K*16*2
-//	pair_arr[0..6]   n*4     two int16s packed per int32 (SoA)
-//	labels           n       uint8 per vector (1=fraud)
-//	tail pad         64B     allows safe SIMD over-read on last batch
+//	flat_vecs        (n+1)*32 int16[16] per vector (AoS); +1 group for SIMD tail
+//	labels           n        uint8 per vector (1=fraud)
+//	tail pad         64B
 func WriteIndexBin(
 	path string,
 	n int,
 	clusterOffsets []uint32,
-	bboxMin, bboxMax []int16,
-	pairArr [NPairs][]int32,
+	bboxMin, bboxMax, flatVec []int16,
 	labels []uint8,
 ) error {
 	f, err := os.Create(path)
@@ -92,10 +91,8 @@ func WriteIndexBin(
 	if err := writePadded(w, bytesOf(bboxMax)); err != nil {
 		return err
 	}
-	for p := 0; p < NPairs; p++ {
-		if err := writePadded(w, bytesOf(pairArr[p])); err != nil {
-			return err
-		}
+	if err := writePadded(w, bytesOf(flatVec)); err != nil {
+		return err
 	}
 	if _, err := w.Write(labels); err != nil {
 		return err

@@ -195,9 +195,9 @@ func SortWithinClusters(refs []Ref, cent [][16]float32, assignments []int32, off
 }
 
 // BBoxPack computes per-cluster int16 bounding boxes and packs quantized
-// dims into 7 SoA pair arrays. Each pair_arr[p][pos] = lo|hi<<16 where
-// lo=uint16(dim2p), hi=uint16(dim2p+1) — two int16s per int32.
-func BBoxPack(refs []Ref, order, offsets []uint32, k int) (bboxMin, bboxMax []int16, pairArr [NPairs][]int32, labels []uint8) {
+// dims into a flat AoS vector array (16 int16 per vector, dims 14-15 = 0).
+// +16 tail elements for SIMD over-read safety in distL2i16q.
+func BBoxPack(refs []Ref, order, offsets []uint32, k int) (bboxMin, bboxMax, flatVec []int16, labels []uint8) {
 	n := len(order)
 	bboxMin = make([]int16, k*16)
 	bboxMax = make([]int16, k*16)
@@ -207,9 +207,7 @@ func BBoxPack(refs []Ref, order, offsets []uint32, k int) (bboxMin, bboxMax []in
 			bboxMax[c*16+lane] = math.MinInt16
 		}
 	}
-	for p := 0; p < NPairs; p++ {
-		pairArr[p] = make([]int32, n)
-	}
+	flatVec = make([]int16, (n+1)*16) // +1 group for SIMD tail (zeroed)
 	labels = make([]uint8, n)
 
 	cid := 0
@@ -222,6 +220,7 @@ func BBoxPack(refs []Ref, order, offsets []uint32, k int) (bboxMin, bboxMax []in
 		qv := quantizeRef(&ref.V)
 
 		base := cid * 16
+		vbase := pos * 16
 		for lane := 0; lane < NDims; lane++ {
 			if qv[lane] < bboxMin[base+lane] {
 				bboxMin[base+lane] = qv[lane]
@@ -229,12 +228,9 @@ func BBoxPack(refs []Ref, order, offsets []uint32, k int) (bboxMin, bboxMax []in
 			if qv[lane] > bboxMax[base+lane] {
 				bboxMax[base+lane] = qv[lane]
 			}
+			flatVec[vbase+lane] = qv[lane]
 		}
-		for p := 0; p < NPairs; p++ {
-			lo := uint32(uint16(qv[2*p]))
-			hi := uint32(uint16(qv[2*p+1]))
-			pairArr[p][pos] = int32(lo | hi<<16)
-		}
+		// dims 14,15 remain 0 (zero-initialized slice)
 	}
-	return bboxMin, bboxMax, pairArr, labels
+	return bboxMin, bboxMax, flatVec, labels
 }

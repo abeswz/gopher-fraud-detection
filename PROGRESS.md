@@ -1,15 +1,16 @@
 # PROGRESS
 
-**Last updated:** 2026-06-05
+**Last updated:** 2026-06-05 (post-AVX2)
 
 ## Status
 
 Flat IVF rewrite complete. Detection is perfect (FP:0, FN:0) locally and remotely. P99 improved 59ms → 38ms remotely, but still far from local (0.43ms). Gap caused by queuing + slow pure-Go `computeClusterPacked` over large partitions (tag 9: 1M refs, K=2048).
 
-**Current local: 6000 (MAX)** (p99=0.43ms, FP=0, FN=0, ERR=0)
+**Current local: 6000 (MAX)** (p99=0.35ms, FP=0, FN=0, ERR=0)
 **Last remote: +4411** (p99=38.75ms, FP=0, FN=0 — commit f20a433)
+**Pending remote: commit 30f0c53** (AVX2 cluster bbox + scan distance)
 
-Primary bottleneck: `computeClusterPacked` scans all K clusters (up to 2048) in pure Go per query. With tag 9 at K=2048, this is ~344K comparisons before even scanning vectors. AVX2 batch (Task 10, deferred) would reduce this 8×.
+AVX2 now in place: `computeClusterBatch8` processes 8 clusters/SIMD-iter via `bpsoaMin/bpsoaMax`. 256 iterations × 5ns = 1.3μs vs ~17μs scalar (~13× faster). `scanClusterGather` uses `distL2i16q` AVX2 for per-vector distance. Local p99 improved to 0.35ms. Remote result pending (commit 30f0c53).
 
 ---
 

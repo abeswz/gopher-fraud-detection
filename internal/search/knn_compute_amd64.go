@@ -33,18 +33,14 @@ func (ix *IvfIndex) scanClusterGather(bestC int, q *[16]int16, topkK *[5]int64, 
 	end := int(ix.clusterOffsets[bestC+1])
 	wk := *worstKey
 
-	var vq [16]int16
 	for vi := start; vi < end; vi++ {
-		for p := 0; p < NPairs; p++ {
-			vq[2*p] = ix.pairs[p][2*vi]
-			vq[2*p+1] = ix.pairs[p][2*vi+1]
-		}
-		d0 := int32(vq[0]) - int32(q[0])
+		base := vi * 16
+		d0 := int32(ix.flatVec[base]) - int32(q[0])
 		if wk != math.MaxInt64 && int64(d0*d0) >= (wk>>IdxBits) {
 			continue
 		}
-		// distL2i16q uses AVX2; dims 14,15 of vq and q are both 0, contributing 0.
-		dist := distL2i16q(vq[:], 0, q)
+		// AoS: 16 contiguous int16s at base; dims 14,15 are 0 matching q[14,15]=0.
+		dist := distL2i16q(ix.flatVec, base, q)
 		key := (int64(uint32(dist)) << IdxBits) | int64(vi)
 		if key >= wk {
 			continue

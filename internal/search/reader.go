@@ -19,10 +19,10 @@ type IvfIndex struct {
 	clusterOffsets []uint32
 	bboxMin        []int16 // K*16
 	bboxMax        []int16 // K*16
-	pairs          [NPairs][]int16
+	flatVec        []int16 // (NVectors+1)*16, AoS: dims 0-13 per vector, 14-15=0
 	labels         []uint8
 
-	// bpsoaMin/bpsoaMax: K rounded up to multiples of 8, pair SoA for SIMD
+	// bpsoaMin/bpsoaMax: K rounded up to multiples of 8, pair SoA for SIMD bbox
 	bpsoaMin []int16
 	bpsoaMax []int16
 }
@@ -73,10 +73,8 @@ func Open(path string) (*IvfIndex, error) {
 	off = align64(off + nc*32)
 	ix.bboxMax = viewAt[int16](data, off, nc*16)
 	off = align64(off + nc*32)
-	for p := 0; p < NPairs; p++ {
-		ix.pairs[p] = viewAt[int16](data, off, 2*nv+16) // +16 for SIMD over-read safety
-		off = align64(off + nv*4)
-	}
+	ix.flatVec = viewAt[int16](data, off, (nv+1)*16) // +1 group for SIMD tail
+	off = align64(off + (nv+1)*16*2)
 	ix.labels = viewAt[uint8](data, off, nv)
 
 	ix.buildBPSOA()
