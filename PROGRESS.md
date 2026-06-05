@@ -1,16 +1,20 @@
 # PROGRESS
 
-**Last updated:** 2026-06-05 (post-AVX2)
+**Last updated:** 2026-06-05 (post-AoS refactor)
 
 ## Status
 
-Flat IVF rewrite complete. Detection is perfect (FP:0, FN:0) locally and remotely. P99 improved 59ms → 38ms remotely, but still far from local (0.43ms). Gap caused by queuing + slow pure-Go `computeClusterPacked` over large partitions (tag 9: 1M refs, K=2048).
+Detection perfeita (FP:0, FN:0) local e remoto. Remote P99=38ms dominado por CFS throttling: servidor consome budget de 0.45 CPU antes do fim do período, causando espera de até ~100ms. Confirmado localmente com `test/stress.js` — p99=42ms sob carga extrema (3000+ req/s).
 
-**Current local: 6000 (MAX)** (p99=0.35ms, FP=0, FN=0, ERR=0)
+**Duas otimizações recentes em main, aguardando rebuild de índice:**
+1. `computeClusterBatch8` AVX2 (commit 30f0c53) — cluster bbox 13× mais rápido
+2. AoS flatVec (commit f99743d) — elimina gather loop no scan de vetores
+
+**Após rebuild:** `make bench-stress` para medir localmente, depois submission.
+
+**Current local: 6000 (MAX)** (p99=0.35ms, FP=0, FN=0, ERR=0 — pré-AoS)
 **Last remote: +4411** (p99=38.75ms, FP=0, FN=0 — commit f20a433)
-**Pending remote: commit 30f0c53** (AVX2 cluster bbox + scan distance)
-
-AVX2 now in place: `computeClusterBatch8` processes 8 clusters/SIMD-iter via `bpsoaMin/bpsoaMax`. 256 iterations × 5ns = 1.3μs vs ~17μs scalar (~13× faster). `scanClusterGather` uses `distL2i16q` AVX2 for per-vector distance. Local p99 improved to 0.35ms. Remote result pending (commit 30f0c53).
+**Pending remote: commit 30f0c53** (AVX2; issue #9111)
 
 ---
 
@@ -39,10 +43,10 @@ Server: raw epoll, GOMAXPROCS(1), GC off (`SetGCPercent(-1)`), `SetMemoryLimit(1
 ## Index
 
 - **Algorithm:** Flat IVF — adaptive K=n/300 clamped [64, 2048], Lloyd's 20 iters
-- **Format:** RNH4-IDX binary (SoA pair layout, bbox per cluster)
+- **Format:** RNH5-IDX binary (AoS flatVec layout, bbox per cluster) — **rebuild required after f99743d**
 - **12 partitions** built by Go `cmd/build_index` from `resources/references.json.gz`
 - **NProbeInitial=12**, repair on count ∈ [1,4] → sweep all clusters
-- **bboxMin/bboxMax** lower-bound pruning for early cluster skip
+- **bboxMin/bboxMax** lower-bound pruning for early cluster skip (SIMD via bpsoaMin/bpsoaMax)
 - **sort-within-cluster**: vectors nearest centroid first → tighter worstKey early
 
 ### Partition sizes (3M refs total)
@@ -64,14 +68,27 @@ Server: raw epoll, GOMAXPROCS(1), GC off (`SetGCPercent(-1)`), `SetMemoryLimit(1
 
 ---
 
-## Next bottleneck: remote P99
+## Bottleneck analysis (confirmado via stress test)
 
-Local p99=0.43ms vs remote p99=38ms (88× gap). Causes:
+Root cause do remote P99=38ms: **CFS throttling**. Stress test local (`test/stress.js`, 3000→5000 req/s) replicou exatamente o cenário: p99=42ms com p50=0.16ms. A maioria das requisições é rápida; a cauda longa vem de lotes que esgotam o budget de 0.45 CPU antes do próximo período CFS (~100ms).
 
-1. **computeClusterPacked pure Go** — O(K×14) per query. K=2048 for tags 7,9 → 28K comparisons before scanning any vector. This alone is ~1-2ms at 0.45 CPU.
-2. **Queuing** — GOMAXPROCS(1) serializes all requests per instance. High VU concurrency in k6 → P99 dominated by wait time.
+### Otimizações aplicadas (em ordem)
 
-AVX2 `computeClusterPackedAVX2` (Task 10, planned) processes 8 clusters per iteration → ~8× speedup on cluster selection. Combined with `scanClusterBatchAVX2` (3-stage early exit, 8 vectors/iter) → estimated 5-10× total speedup → remote P99 <5ms.
+| Commit | Mudança | Impacto medido |
+|--------|---------|----------------|
+| f20a433 | flat IVF + epoll + GC off | local 0.43ms, remote 38ms |
+| 30f0c53 | AVX2 `computeClusterBatch8` (13×) + `distL2i16q` no scan | local 0.35ms |
+| f99743d | AoS flatVec — elimina gather loop no scan | aguarda rebuild |
+
+### computeClusterPacked (resolvido)
+
+`computeClusterBatch8`: 8 clusters/iter via SIMD em `bpsoaMin/bpsoaMax`. K=2048 → 256 grupos × 5ns = 1.3μs vs ~17μs escalar. **~13× mais rápido.**
+
+### scanClusterGather — gather eliminado (f99743d)
+
+**Antes (SoA):** 7 leituras espalhadas por vetor (`pairs[p][2*vi]`). Para 12 probes × 488 vetores: ~41K acessos a 7 arrays distintos de 4MB → cache thrashing.
+
+**Depois (AoS):** `distL2i16q(ix.flatVec, vi*16, q)` direto. Vetor contíguo (32 bytes), scan sequencial dentro do cluster → L1-warm. Estimativa: 4-8× speedup no scan.
 
 ---
 
@@ -87,7 +104,8 @@ AVX2 `computeClusterPackedAVX2` (Task 10, planned) processes 8 clusters per iter
 | 2026-06-04 | +5909 | 0.606ms | — | 1 | 0 | 4-way split by unknown_merchant |
 | 2026-06-05 | +4084 | — | 59ms | 2 | 0 | remote: old IVFH (commit 491f131) |
 | 2026-06-05 | +4411 | 0.43ms | 38ms | 0 | 0 | **flat IVF + epoll + GC off (commit f20a433)** |
-| **2026-06-05** | **6000** | **0.43ms** | — | **0** | **0** | **local max (bug fix: partition pre-partitioning)** |
+| 2026-06-05 | 6000 | 0.43ms | — | 0 | 0 | local max (partition pre-partitioning) |
+| 2026-06-05 | — | 0.35ms | pending | 0 | 0 | AVX2 bbox batch + distL2i16q (commit 30f0c53) |
 
 ---
 
