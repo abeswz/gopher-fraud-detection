@@ -33,6 +33,12 @@ func writeIVFHBinary(idx *IVFHIndex) []byte {
 	for _, v := range idx.Radii {
 		binary.Write(&buf, binary.LittleEndian, math.Float32bits(v))
 	}
+	for _, v := range idx.BoxMin {
+		binary.Write(&buf, binary.LittleEndian, v)
+	}
+	for _, v := range idx.BoxMax {
+		binary.Write(&buf, binary.LittleEndian, v)
+	}
 	for _, v := range idx.Vectors {
 		binary.Write(&buf, binary.LittleEndian, v)
 	}
@@ -43,6 +49,14 @@ func writeIVFHBinary(idx *IVFHIndex) []byte {
 func makeMinimalIVFHIndex() *IVFHIndex {
 	// K1=2, K2=2 → 4 leaf clusters; N=4 (one vector per leaf)
 	K1, K2, N := 2, 2, 4
+	nLeaf := K1 * K2
+	boxMin := make([]int16, nLeaf*16)
+	boxMax := make([]int16, nLeaf*16)
+	// leaf 1: all dims = 10000
+	for j := 0; j < 16; j++ {
+		boxMin[1*16+j] = 10000
+		boxMax[1*16+j] = 10000
+	}
 	idx := &IVFHIndex{
 		K1: K1, K2: K2, N: N,
 		DSafe:          0.5,
@@ -52,6 +66,8 @@ func makeMinimalIVFHIndex() *IVFHIndex {
 		Starts:         []uint32{0, 1, 2, 3},
 		Sizes:          []uint32{1, 1, 1, 1},
 		Radii:          []float32{0.1, 0.1, 0.1, 0.1},
+		BoxMin:         boxMin,
+		BoxMax:         boxMax,
 		Vectors:        make([]int16, N*16),
 		Labels:         []uint8{0, 1, 0, 1},
 	}

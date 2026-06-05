@@ -15,29 +15,68 @@ type stubIndex struct{ count int }
 
 func (s *stubIndex) KNN(_ [16]float32, _ int) int { return s.count }
 
-func TestRouting_NilLastTx_UsesFirstIdx(t *testing.T) {
-	FirstTxIdx = &stubIndex{count: 4} // fraud
-	SubseqIdx = &stubIndex{count: 0}  // legit
+func setupStubs() {
+	FirstKnownIdx = &stubIndex{count: 0}
+	FirstUnknownIdx = &stubIndex{count: 1}
+	SubseqKnownIdx = &stubIndex{count: 2}
+	SubseqUnknownIdx = &stubIndex{count: 3}
 	Vec = &vectorizer.Vectorizer{MccRisk: map[string]float32{}}
+}
 
-	req := dto.FraudRequest{}
-	// LastTx is nil (zero value for *LastTransaction) → routes to FirstTxIdx → fraudCount=4
+func TestRouting_NilLastTx_KnownMerchant(t *testing.T) {
+	setupStubs()
+	FirstKnownIdx = &stubIndex{count: 4}
+
+	req := dto.FraudRequest{
+		Customer: dto.Customer{KnownMerchants: []string{"MERC-01"}},
+		Merchant: dto.Merchant{ID: "MERC-01"},
+	}
 	got := CalculateFraudScore(req)
 	if got != 4 {
-		t.Errorf("nil LastTx routing: got %d, want 4", got)
+		t.Errorf("first+known routing: got %d, want 4", got)
 	}
 }
 
-func TestRouting_NonNilLastTx_UsesSubseqIdx(t *testing.T) {
-	FirstTxIdx = &stubIndex{count: 0} // legit
-	SubseqIdx = &stubIndex{count: 3}  // fraud
-	Vec = &vectorizer.Vectorizer{MccRisk: map[string]float32{}}
+func TestRouting_NilLastTx_UnknownMerchant(t *testing.T) {
+	setupStubs()
+	FirstUnknownIdx = &stubIndex{count: 5}
+
+	req := dto.FraudRequest{
+		Customer: dto.Customer{KnownMerchants: []string{"MERC-01"}},
+		Merchant: dto.Merchant{ID: "MERC-99"},
+	}
+	got := CalculateFraudScore(req)
+	if got != 5 {
+		t.Errorf("first+unknown routing: got %d, want 5", got)
+	}
+}
+
+func TestRouting_SubseqKnown(t *testing.T) {
+	setupStubs()
 
 	lastTx := &dto.LastTransaction{}
-	req := dto.FraudRequest{LastTx: lastTx}
-	// LastTx is non-nil → should route to SubseqIdx → fraudCount=3
+	req := dto.FraudRequest{
+		LastTx:   lastTx,
+		Customer: dto.Customer{KnownMerchants: []string{"MERC-01"}},
+		Merchant: dto.Merchant{ID: "MERC-01"},
+	}
+	got := CalculateFraudScore(req)
+	if got != 2 {
+		t.Errorf("subseq+known routing: got %d, want 2", got)
+	}
+}
+
+func TestRouting_SubseqUnknown(t *testing.T) {
+	setupStubs()
+
+	lastTx := &dto.LastTransaction{}
+	req := dto.FraudRequest{
+		LastTx:   lastTx,
+		Customer: dto.Customer{KnownMerchants: []string{"MERC-01"}},
+		Merchant: dto.Merchant{ID: "MERC-99"},
+	}
 	got := CalculateFraudScore(req)
 	if got != 3 {
-		t.Errorf("nonNil LastTx routing: got %d, want 3", got)
+		t.Errorf("subseq+unknown routing: got %d, want 3", got)
 	}
 }

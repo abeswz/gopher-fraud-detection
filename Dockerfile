@@ -27,7 +27,9 @@ COPY index/ /app/index/
 COPY resources/ /app/resources/
 
 ENV FIRST_TX_INDEX_PATH=/app/index/first_tx.ivfh \
-    SUBSEQ_INDEX_PATH=/app/index/subsequent_tx.ivfh \
+    SUBSEQ_ONLINE_INDEX_PATH=/app/index/subseq_online.ivfh \
+    SUBSEQ_PHYS_CP_INDEX_PATH=/app/index/subseq_phys_cp.ivfh \
+    SUBSEQ_PHYS_NO_CP_INDEX_PATH=/app/index/subseq_phys_no_cp.ivfh \
     NORM_PATH=/app/resources/normalization.json \
     MCC_PATH=/app/resources/mcc_risk.json \
     GOMAXPROCS=1 \

@@ -9,13 +9,23 @@ from cuml.cluster import KMeans
 from cuml.neighbors import NearestNeighbors as cuNearestNeighbors
 
 # 2-level IVF hyperparameters
-K1_FIRST = 64  # macro clusters, first_tx index
-K2_FIRST = 32  # micro clusters per macro, first_tx index
-K1_SUBSEQ = 256  # macro clusters, subsequent_tx index
-K2_SUBSEQ = 16  # micro clusters per macro, subsequent_tx index
+K2_FIRST = 32   # micro clusters per macro, first_tx sub-indexes
+K2_SUBSEQ = 16  # micro clusters per macro, subsequent sub-indexes
+
+# DIM index for static partitioning: unknown_merchant (1=unknown, 0=known)
+DIM_UNKNOWN_MERCHANT = 11
 
 DIMS = 16  # padded feature dims (14 features + 2 zero-padding)
 SCALE = 10000  # int16 quantization factor
+
+
+def choose_k1(N: int, K2: int = 16, target_leaf_size: int = 500) -> int:
+    """Scale K1 so avg leaf size ≈ target_leaf_size."""
+    k1 = max(4, round(N / (target_leaf_size * K2)))
+    for nice in [4, 8, 16, 32, 48, 64, 96, 128, 160, 192, 256, 320, 384, 512]:
+        if nice >= k1:
+            return nice
+    return 512
 
 
 def detect_null_tx_mask(vectors: np.ndarray) -> np.ndarray:
@@ -238,6 +248,17 @@ def build_ivfh(
         np.int16
     )
 
+    # Bounding boxes in int16 space — exact bounds over stored vectors per micro-cluster
+    box_min_int16 = np.zeros((N_leaves, DIMS), dtype=np.int16)
+    box_max_int16 = np.zeros((N_leaves, DIMS), dtype=np.int16)
+    for c in range(N_leaves):
+        s, sz = int(cluster_starts[c]), int(cluster_sizes[c])
+        if sz == 0:
+            continue
+        vecs_in_c = vectors_int16[s : s + sz]
+        box_min_int16[c] = vecs_in_c.min(axis=0)
+        box_max_int16[c] = vecs_in_c.max(axis=0)
+
     # Write IVFH binary
     dst.parent.mkdir(exist_ok=True)
     with open(dst, "wb") as out:
@@ -250,6 +271,8 @@ def build_ivfh(
         out.write(cluster_starts.astype("<u4").tobytes())
         out.write(cluster_sizes.astype("<u4").tobytes())
         out.write(cluster_radius.astype("<f4").tobytes())
+        out.write(box_min_int16.astype("<i2").tobytes())
+        out.write(box_max_int16.astype("<i2").tobytes())
         out.write(vectors_int16.astype("<i2").tobytes())
         out.write(labels_sorted.astype("u1").tobytes())
 
@@ -285,16 +308,33 @@ def main():
         f"subsequent_tx={len(labels_subseq)}"
     )
 
-    build_ivfh(
-        vectors_first, labels_first, K1_FIRST, K2_FIRST, dst_dir / "first_tx.ivfh"
-    )
-    build_ivfh(
-        vectors_subseq,
-        labels_subseq,
-        K1_SUBSEQ,
-        K2_SUBSEQ,
-        dst_dir / "subsequent_tx.ivfh",
-    )
+    # Split first_tx by unknown_merchant (dim 11): homogeneous sub-spaces → better IVF accuracy
+    first_unknown_mask = vectors_first[:, DIM_UNKNOWN_MERCHANT] == 1.0
+
+    partitions_first = [
+        ("first_known",   ~first_unknown_mask, K2_FIRST, "first_known.ivfh"),
+        ("first_unknown",  first_unknown_mask, K2_FIRST, "first_unknown.ivfh"),
+    ]
+    for name, mask, k2, filename in partitions_first:
+        vp = vectors_first[mask]
+        lp = labels_first[mask]
+        k1 = choose_k1(len(lp), k2)
+        print(f"Partition {name}: N={len(lp)} ({mask.mean()*100:.1f}%), K1={k1}, K2={k2}")
+        build_ivfh(vp, lp, k1, k2, dst_dir / filename)
+
+    # Split subseq by unknown_merchant (dim 11): same rationale
+    subseq_unknown_mask = vectors_subseq[:, DIM_UNKNOWN_MERCHANT] == 1.0
+
+    partitions_subseq = [
+        ("subseq_known",    ~subseq_unknown_mask, K2_SUBSEQ, "subseq_known.ivfh"),
+        ("subseq_unknown",   subseq_unknown_mask, K2_SUBSEQ, "subseq_unknown.ivfh"),
+    ]
+    for name, mask, k2, filename in partitions_subseq:
+        vp = vectors_subseq[mask]
+        lp = labels_subseq[mask]
+        k1 = choose_k1(len(lp), k2)
+        print(f"Partition {name}: N={len(lp)} ({mask.mean()*100:.1f}%), K1={k1}, K2={k2}")
+        build_ivfh(vp, lp, k1, k2, dst_dir / filename)
 
 
 if __name__ == "__main__":

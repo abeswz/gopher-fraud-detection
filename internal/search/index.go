@@ -28,6 +28,8 @@ type IVFHIndex struct {
 	Starts         []uint32
 	Sizes          []uint32
 	Radii          []float32
+	BoxMin         []int16 // nLeaf×dims, int16 ×10000; zero-copy mmap view
+	BoxMax         []int16 // nLeaf×dims, int16 ×10000; zero-copy mmap view
 	Vectors        []int16 // zero-copy mmap view
 	Labels         []uint8 // zero-copy mmap view
 	mmap           []byte
@@ -108,6 +110,14 @@ func LoadIVFHIndex(path string, nCoarseProbe int) (*IVFHIndex, error) {
 		off += 4
 	}
 
+	boxMinBytes := data[off : off+nLeaf*dims*2]
+	off += nLeaf * dims * 2
+	boxMaxBytes := data[off : off+nLeaf*dims*2]
+	off += nLeaf * dims * 2
+
+	boxMin := unsafe.Slice((*int16)(unsafe.Pointer(&boxMinBytes[0])), nLeaf*dims)
+	boxMax := unsafe.Slice((*int16)(unsafe.Pointer(&boxMaxBytes[0])), nLeaf*dims)
+
 	vecBytes := data[off : off+n*dims*2]
 	labelsBytes := data[off+n*dims*2 : off+n*dims*2+n]
 
@@ -125,6 +135,8 @@ func LoadIVFHIndex(path string, nCoarseProbe int) (*IVFHIndex, error) {
 		Starts:         starts,
 		Sizes:          sizes,
 		Radii:          radii,
+		BoxMin:         boxMin,
+		BoxMax:         boxMax,
 		Vectors:        vectors,
 		Labels:         labels,
 		mmap:           data,
@@ -151,6 +163,8 @@ func parseIVFH(data []byte) error {
 		nLeaf*4 +      // starts
 		nLeaf*4 +      // sizes
 		nLeaf*4 +      // radii
+		nLeaf*dims*2 + // box_min (int16)
+		nLeaf*dims*2 + // box_max (int16)
 		n*dims*2 +     // vectors (int16)
 		n              // labels (uint8)
 	if len(data) != expected {

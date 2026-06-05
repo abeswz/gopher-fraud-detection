@@ -40,16 +40,40 @@ func centFindMax(entries []centEntry) (maxDist float32, maxPos int) {
 }
 
 const (
-	NCoarseProbeSubseq = 16
-	NCoarseProbeFirst  = 12
-	nprobeInit         = 8
-	nprobeMax          = 20
+	NCoarseProbeFirstKnown    = 12
+	NCoarseProbeFirstUnknown  = 12
+	NCoarseProbeSubseqKnown   = 16
+	NCoarseProbeSubseqUnknown = 16
+	nprobeInit                = 8
+	nprobeMax                 = 20
 	nprobeRepair       = 128
 	nprobeThreshRepair = 128
 )
 
 func sqrt32(x float32) float32 {
 	return float32(math.Sqrt(float64(x)))
+}
+
+// boxMinDistSqI computes the squared minimum distance from qi16 to the axis-aligned
+// bounding box [boxMin[base..base+dims), boxMax[base..base+dims)) in int16 space.
+// Returns 0 when the query falls inside the box on all dimensions.
+func boxMinDistSqI(qi16 *[dims]int16, boxMin, boxMax []int16, base int) int32 {
+	_ = boxMin[base+15]
+	_ = boxMax[base+15]
+	var d int32
+	for i := 0; i < dims; i++ {
+		q := int32(qi16[i])
+		lo := int32(boxMin[base+i])
+		hi := int32(boxMax[base+i])
+		var gap int32
+		if q < lo {
+			gap = lo - q
+		} else if q > hi {
+			gap = q - hi
+		}
+		d += gap * gap
+	}
+	return d
 }
 
 func (idx *IVFHIndex) KNN(query [16]float32, k int) int {
@@ -73,7 +97,7 @@ func (idx *IVFHIndex) KNN(query [16]float32, k int) int {
 	nCoarse := min(idx.NCoarseProbe, idx.K1)
 	nMicro := min(nprobeRepair, idx.K1*idx.K2)
 
-	var topMacroArr [NCoarseProbeSubseq]centEntry
+	var topMacroArr [NCoarseProbeSubseqKnown]centEntry
 	topMacro := topMacroArr[:0]
 	maxMacroD := float32(0)
 	maxMacroP := 0
@@ -216,7 +240,7 @@ func ivfhScanVectors(idx *IVFHIndex, topMicro []centEntry, query *[16]float32, k
 	if len(top) == k {
 		fraudCount := countFraudH(top)
 		if fraudCount == 5 {
-			return 5
+			return idx.knnFullMacroRepair(query, k)
 		}
 		if fraudCount == 0 && maxDist < idx.DSafeSqI32 {
 			return 0
@@ -231,6 +255,11 @@ func ivfhScanVectors(idx *IVFHIndex, topMicro []centEntry, query *[16]float32, k
 		lowerBound := dCentroid - radius
 		if lowerBound > 0 && lowerBound*lowerBound > float32(maxDist)*invScaleSq {
 			break
+		}
+		if len(top) == k && idx.BoxMin != nil {
+			if boxMinDistSqI(&qi16, idx.BoxMin, idx.BoxMax, ce.id*dims) >= maxDist {
+				continue
+			}
 		}
 
 		start := int(idx.Starts[ce.id])
@@ -259,16 +288,21 @@ func ivfhScanVectors(idx *IVFHIndex, topMicro []centEntry, query *[16]float32, k
 	// mid-check: clear consensus after standard repair → skip deep repair
 	if len(top) == k {
 		fraudCount := countFraudH(top)
-		if fraudCount == 0 || fraudCount == k {
-			return fraudCount
+		if fraudCount == 0 {
+			return 0
 		}
-		// ambiguous (1–4): deep repair — probe remaining candidates
+		// ambiguous or fraud-side (1–5): deep repair — probe remaining candidates
 		for _, ce := range topMicro[standardEnd:] {
 			dCentroid := sqrt32(ce.dist)
 			radius := idx.Radii[ce.id]
 			lowerBound := dCentroid - radius
 			if lowerBound > 0 && lowerBound*lowerBound > float32(maxDist)*invScaleSq {
 				break
+			}
+			if len(top) == k && idx.BoxMin != nil {
+				if boxMinDistSqI(&qi16, idx.BoxMin, idx.BoxMax, ce.id*dims) >= maxDist {
+					continue
+				}
 			}
 
 			start := int(idx.Starts[ce.id])
@@ -296,14 +330,14 @@ func ivfhScanVectors(idx *IVFHIndex, topMicro []centEntry, query *[16]float32, k
 	}
 
 	finalCount := countFraudH(top)
-	if len(top) == k && finalCount == 3 {
+	if len(top) == k && finalCount >= 3 {
 		return idx.knnFullMacroRepair(query, k)
 	}
 	return finalCount
 }
 
-// knnFullMacroRepair scans ALL K1*K2 micro centroids to find true top-k neighbors.
-// Only called for fraudCount==3 (knife-edge: 3/5=0.6 = exact threshold).
+// knnFullMacroRepair scans the top-nprobeThreshRepair micro clusters to find true top-k neighbors.
+// Called when IVF returns an ambiguous or high-fraud count.
 func (idx *IVFHIndex) knnFullMacroRepair(query *[16]float32, k int) int {
 	q0 := (*query)[0]
 	q1 := (*query)[1]
@@ -330,8 +364,8 @@ func (idx *IVFHIndex) knnFullMacroRepair(query *[16]float32, k int) int {
 	q0i16 := int32(qi16[0])
 
 	nMicro := min(nprobeThreshRepair, idx.K1*idx.K2)
-	var topMicroArr [nprobeThreshRepair]centEntry
-	topMicro := topMicroArr[:0]
+	var allMicro [nprobeThreshRepair]centEntry
+	topMicro := allMicro[:0]
 	maxMicroD := float32(0)
 	maxMicroP := 0
 
@@ -389,12 +423,17 @@ func (idx *IVFHIndex) knnFullMacroRepair(query *[16]float32, k int) int {
 	vecs := idx.Vectors
 	labs := idx.Labels
 
-	for _, ce := range topMicro {
+	for _, ce := range allMicro {
 		dCentroid := sqrt32(ce.dist)
 		radius := idx.Radii[ce.id]
 		lowerBound := dCentroid - radius
 		if len(top) == k && lowerBound > 0 && lowerBound*lowerBound > float32(maxDist)*invScaleSq {
 			break
+		}
+		if len(top) == k && idx.BoxMin != nil {
+			if boxMinDistSqI(&qi16, idx.BoxMin, idx.BoxMax, ce.id*dims) >= maxDist {
+				continue
+			}
 		}
 
 		start := int(idx.Starts[ce.id])

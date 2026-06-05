@@ -48,11 +48,19 @@ services:
     <<: *api
     environment:
       - SOCK=/run/sock/api1.sock
+      - FIRST_KNOWN_INDEX_PATH=/app/index/first_known.ivfh
+      - FIRST_UNKNOWN_INDEX_PATH=/app/index/first_unknown.ivfh
+      - SUBSEQ_KNOWN_INDEX_PATH=/app/index/subseq_known.ivfh
+      - SUBSEQ_UNKNOWN_INDEX_PATH=/app/index/subseq_unknown.ivfh
 
   api2:
     <<: *api
     environment:
       - SOCK=/run/sock/api2.sock
+      - FIRST_KNOWN_INDEX_PATH=/app/index/first_known.ivfh
+      - FIRST_UNKNOWN_INDEX_PATH=/app/index/first_unknown.ivfh
+      - SUBSEQ_KNOWN_INDEX_PATH=/app/index/subseq_known.ivfh
+      - SUBSEQ_UNKNOWN_INDEX_PATH=/app/index/subseq_unknown.ivfh
 
 networks:
   fraud-net:

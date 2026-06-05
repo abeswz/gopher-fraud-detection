@@ -18,34 +18,44 @@ func envOr(key, def string) string {
 	return def
 }
 
+func loadIdx(path string, nProbe int) *search.IVFHIndex {
+	idx, err := search.LoadIVFHIndex(path, nProbe)
+	if err != nil {
+		log.Fatalf("load index %s: %v", path, err)
+	}
+	return idx
+}
+
 func main() {
-	firstIdxPath := envOr("FIRST_TX_INDEX_PATH", "index/first_tx.ivfh")
-	subseqIdxPath := envOr("SUBSEQ_INDEX_PATH", "index/subsequent_tx.ivfh")
-	normPath := envOr("NORM_PATH", "resources/normalization.json")
-	mccPath := envOr("MCC_PATH", "resources/mcc_risk.json")
+	firstKnownPath    := envOr("FIRST_KNOWN_INDEX_PATH",    "index/first_known.ivfh")
+	firstUnknownPath  := envOr("FIRST_UNKNOWN_INDEX_PATH",  "index/first_unknown.ivfh")
+	subseqKnownPath   := envOr("SUBSEQ_KNOWN_INDEX_PATH",   "index/subseq_known.ivfh")
+	subseqUnknownPath := envOr("SUBSEQ_UNKNOWN_INDEX_PATH", "index/subseq_unknown.ivfh")
+	normPath          := envOr("NORM_PATH", "resources/normalization.json")
+	mccPath           := envOr("MCC_PATH",  "resources/mcc_risk.json")
 
 	vec, err := vectorizer.Load(normPath, mccPath)
 	if err != nil {
 		log.Fatalf("load vectorizer: %v", err)
 	}
 
-	firstIdx, err := search.LoadIVFHIndex(firstIdxPath, search.NCoarseProbeFirst)
-	if err != nil {
-		log.Fatalf("load first_tx index: %v", err)
-	}
-	defer firstIdx.Close()
-
-	subseqIdx, err := search.LoadIVFHIndex(subseqIdxPath, search.NCoarseProbeSubseq)
-	if err != nil {
-		log.Fatalf("load subsequent_tx index: %v", err)
-	}
-	defer subseqIdx.Close()
+	firstKnownIdx    := loadIdx(firstKnownPath,    search.NCoarseProbeFirstKnown)
+	firstUnknownIdx  := loadIdx(firstUnknownPath,  search.NCoarseProbeFirstUnknown)
+	subseqKnownIdx   := loadIdx(subseqKnownPath,   search.NCoarseProbeSubseqKnown)
+	subseqUnknownIdx := loadIdx(subseqUnknownPath, search.NCoarseProbeSubseqUnknown)
+	defer firstKnownIdx.Close()
+	defer firstUnknownIdx.Close()
+	defer subseqKnownIdx.Close()
+	defer subseqUnknownIdx.Close()
 
 	service.Vec = vec
-	service.FirstTxIdx = firstIdx
-	service.SubseqIdx = subseqIdx
+	service.FirstKnownIdx = firstKnownIdx
+	service.FirstUnknownIdx = firstUnknownIdx
+	service.SubseqKnownIdx = subseqKnownIdx
+	service.SubseqUnknownIdx = subseqUnknownIdx
 
-	log.Printf("loaded first_tx: %d vectors, subsequent_tx: %d vectors", firstIdx.N, subseqIdx.N)
+	log.Printf("loaded first_known=%d first_unknown=%d subseq_known=%d subseq_unknown=%d",
+		firstKnownIdx.N, firstUnknownIdx.N, subseqKnownIdx.N, subseqUnknownIdx.N)
 
 	sock := envOr("SOCK", "")
 	if sock == "" {
