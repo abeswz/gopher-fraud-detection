@@ -64,9 +64,17 @@ func main() {
 	log("parsed %d refs (%.1fs)", len(refs), time.Since(t0).Seconds())
 	buf = nil // allow GC
 
+	// Pre-partition into buckets in one pass — FilterByTag is destructive in-place.
+	buckets := make([][]search.Ref, search.NPartitions)
+	for i := range refs {
+		tag := search.TagFromFloat(&refs[i].V)
+		buckets[tag] = append(buckets[tag], refs[i])
+	}
+	refs = nil
+
 	built := 0
 	for tag := 0; tag < search.NPartitions; tag++ {
-		part := search.FilterByTag(refs, tag)
+		part := buckets[tag]
 		if len(part) == 0 {
 			continue
 		}
