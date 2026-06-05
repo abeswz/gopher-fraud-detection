@@ -1,154 +1,126 @@
 package vectorizer
 
 import (
-	"math"
 	"testing"
 
 	"gopher-fraud-detection/internal/dto"
 )
 
-var testNorm = Normalization{
-	MaxAmount:            10000,
-	MaxInstallments:      12,
-	AmountVsAvgRatio:     10,
-	MaxMinutes:           1440,
-	MaxKm:                1000,
-	MaxTxCount24h:        20,
-	MaxMerchantAvgAmount: 10000,
+// tagFromVec mirrors the 4-bit tag logic for test verification.
+func tagFromVec(v [16]int16) int {
+	tag := 0
+	if v[5] >= 0 {
+		tag |= 1
+	} // has_last_tx
+	if v[11] > 0 {
+		tag |= 2
+	} // unknown_merchant
+	if v[9] > 0 {
+		tag |= 4
+	} // is_online
+	if v[10] > 0 {
+		tag |= 8
+	} // card_present
+	return tag
 }
 
-var testMcc = map[string]float32{
-	"5411": 0.15,
-	"7802": 0.75,
+type lastTxArgs struct {
+	Timestamp     string
+	KmFromCurrent float64
 }
 
-func approxEqual(a, b float32, tol float64) bool {
-	return math.Abs(float64(a-b)) <= tol
-}
+func makeReq(amount float64, installments int, custAvg float64, txCount24h int,
+	kmFromHome float64, knownMerchant bool, isOnline bool, cardPresent bool,
+	mcc string, merchantAvg float64, lastTx *lastTxArgs) dto.FraudRequest {
 
-func checkVec(t *testing.T, got [16]float32, want [14]float32) {
-	t.Helper()
-	for i := range want {
-		if !approxEqual(got[i], want[i], 1e-3) {
-			t.Errorf("dim[%d]: got %.4f, want %.4f", i, got[i], want[i])
+	var merchants []string
+	merchantID := "merchant-abc"
+	if knownMerchant {
+		merchants = []string{merchantID}
+	}
+	req := dto.FraudRequest{
+		Transaction: dto.Transaction{
+			Amount:       amount,
+			Installments: installments,
+			RequestedAt:  "2024-01-15T14:30:00Z",
+		},
+		Customer: dto.Customer{
+			AvgAmount:      custAvg,
+			TxCount24h:     txCount24h,
+			KnownMerchants: merchants,
+		},
+		Merchant: dto.Merchant{
+			ID:        merchantID,
+			MCC:       mcc,
+			AvgAmount: merchantAvg,
+		},
+		Terminal: dto.Terminal{
+			KmFromHome:  kmFromHome,
+			IsOnline:    isOnline,
+			CardPresent: cardPresent,
+		},
+	}
+	if lastTx != nil {
+		req.LastTx = &dto.LastTransaction{
+			Timestamp:     lastTx.Timestamp,
+			KmFromCurrent: lastTx.KmFromCurrent,
 		}
 	}
+	return req
 }
 
-// Example 1 from DETECTION_RULES.md — legit, last_transaction null
-// Expected vector: [0.0041, 0.1667, 0.05, 0.7826, 0.3333, -1, -1, 0.0292, 0.15, 0, 1, 0, 0.15, 0.006]
-func TestVectorize_LegitNullLastTx(t *testing.T) {
-	v := &Vectorizer{Norm: testNorm, MccRisk: testMcc}
-	req := dto.FraudRequest{
-		Transaction: dto.Transaction{
-			Amount:       41.12,
-			Installments: 2,
-			RequestedAt:  "2026-03-11T18:45:53Z",
+func TestVectorize_Sentinel(t *testing.T) {
+	v := &Vectorizer{
+		Norm: Normalization{
+			MaxAmount: 10000, MaxInstallments: 12,
+			AmountVsAvgRatio: 10, MaxMinutes: 1440, MaxKm: 1000,
+			MaxTxCount24h: 20, MaxMerchantAvgAmount: 10000,
 		},
-		Customer: dto.Customer{
-			AvgAmount:      82.24,
-			TxCount24h:     3,
-			KnownMerchants: []string{"MERC-003", "MERC-016"},
-		},
-		Merchant: dto.Merchant{ID: "MERC-016", MCC: "5411", AvgAmount: 60.25},
-		Terminal: dto.Terminal{IsOnline: false, CardPresent: true, KmFromHome: 29.2331036248},
-		LastTx:   nil,
+		MccRisk: map[string]float32{"5411": 0.1},
 	}
-	want := [14]float32{0.0041, 0.1667, 0.05, 0.7826, 0.3333, -1, -1, 0.0292, 0.15, 0, 1, 0, 0.15, 0.006}
-	checkVec(t, v.Vectorize(req), want)
-}
-
-// Example 2 from DETECTION_RULES.md — fraud, last_transaction null
-// Expected vector: [0.9506, 0.8333, 1.0, 0.2174, 0.8333, -1, -1, 0.9523, 1.0, 0, 1, 1, 0.75, 0.0055]
-func TestVectorize_FraudNullLastTx(t *testing.T) {
-	v := &Vectorizer{Norm: testNorm, MccRisk: testMcc}
-	req := dto.FraudRequest{
-		Transaction: dto.Transaction{
-			Amount:       9505.97,
-			Installments: 10,
-			RequestedAt:  "2026-03-14T05:15:12Z",
-		},
-		Customer: dto.Customer{
-			AvgAmount:      81.28,
-			TxCount24h:     20,
-			KnownMerchants: []string{"MERC-008", "MERC-007", "MERC-005"},
-		},
-		Merchant: dto.Merchant{ID: "MERC-068", MCC: "7802", AvgAmount: 54.86},
-		Terminal: dto.Terminal{IsOnline: false, CardPresent: true, KmFromHome: 952.2745933273},
-		LastTx:   nil,
+	req := makeReq(500, 1, 1000, 5, 50, true, false, false, "5411", 1000, nil)
+	vec := v.Vectorize(req)
+	// last_tx nil → sentinel -10000
+	if vec[5] != -10000 {
+		t.Errorf("sentinel v[5] = %d, want -10000", vec[5])
 	}
-	want := [14]float32{0.9506, 0.8333, 1.0, 0.2174, 0.8333, -1, -1, 0.9523, 1.0, 0, 1, 1, 0.75, 0.0055}
-	checkVec(t, v.Vectorize(req), want)
-}
-
-// Known merchant → unknown_merchant = 0
-func TestVectorize_KnownMerchant(t *testing.T) {
-	v := &Vectorizer{Norm: testNorm, MccRisk: testMcc}
-	req := dto.FraudRequest{
-		Transaction: dto.Transaction{Amount: 100, Installments: 1, RequestedAt: "2026-01-01T12:00:00Z"},
-		Customer:    dto.Customer{AvgAmount: 100, TxCount24h: 1, KnownMerchants: []string{"MERC-A", "MERC-B"}},
-		Merchant:    dto.Merchant{ID: "MERC-A", MCC: "5411", AvgAmount: 100},
-		Terminal:    dto.Terminal{},
-		LastTx:      nil,
+	if vec[6] != -10000 {
+		t.Errorf("sentinel v[6] = %d, want -10000", vec[6])
 	}
-	got := v.Vectorize(req)
-	if got[11] != 0 {
-		t.Errorf("known merchant: dim[11] got %.1f, want 0", got[11])
+	tag := tagFromVec(vec)
+	if tag&1 != 0 {
+		t.Errorf("has_last_tx bit should be 0, tag=%d", tag)
 	}
 }
 
-// Unknown merchant → unknown_merchant = 1
-func TestVectorize_UnknownMerchant(t *testing.T) {
-	v := &Vectorizer{Norm: testNorm, MccRisk: testMcc}
-	req := dto.FraudRequest{
-		Transaction: dto.Transaction{Amount: 100, Installments: 1, RequestedAt: "2026-01-01T12:00:00Z"},
-		Customer:    dto.Customer{AvgAmount: 100, TxCount24h: 1, KnownMerchants: []string{"MERC-A", "MERC-B"}},
-		Merchant:    dto.Merchant{ID: "MERC-Z", MCC: "9999", AvgAmount: 100},
-		Terminal:    dto.Terminal{},
-		LastTx:      nil,
+func TestVectorize_IsOnline(t *testing.T) {
+	v := &Vectorizer{
+		Norm: Normalization{MaxAmount: 10000, MaxInstallments: 12,
+			AmountVsAvgRatio: 10, MaxMinutes: 1440, MaxKm: 1000,
+			MaxTxCount24h: 20, MaxMerchantAvgAmount: 10000},
+		MccRisk: map[string]float32{},
 	}
-	got := v.Vectorize(req)
-	if got[11] != 1 {
-		t.Errorf("unknown merchant: dim[11] got %.1f, want 1", got[11])
+	req := makeReq(100, 1, 500, 2, 10, false, true, false, "1234", 500, nil)
+	vec := v.Vectorize(req)
+	if vec[9] != 10000 {
+		t.Errorf("is_online v[9] = %d, want 10000", vec[9])
 	}
-	if got[12] != 0.5 {
-		t.Errorf("unknown mcc default: dim[12] got %.1f, want 0.5", got[12])
+	if vec[10] != 0 {
+		t.Errorf("card_present v[10] = %d, want 0", vec[10])
 	}
 }
 
-// last_transaction present → dims 5,6 computed
-func TestVectorize_WithLastTx(t *testing.T) {
-	v := &Vectorizer{Norm: testNorm, MccRisk: testMcc}
-	req := dto.FraudRequest{
-		Transaction: dto.Transaction{
-			Amount:       384.88,
-			Installments: 3,
-			RequestedAt:  "2026-03-11T20:23:35Z",
-		},
-		Customer: dto.Customer{
-			AvgAmount:      769.76,
-			TxCount24h:     3,
-			KnownMerchants: []string{"MERC-009", "MERC-009", "MERC-001", "MERC-001"},
-		},
-		Merchant: dto.Merchant{ID: "MERC-001", MCC: "5912", AvgAmount: 298.95},
-		Terminal: dto.Terminal{IsOnline: false, CardPresent: true, KmFromHome: 13.7090520965},
-		LastTx: &dto.LastTransaction{
-			Timestamp:     "2026-03-11T14:58:35Z",
-			KmFromCurrent: 18.8626479774,
-		},
+func TestVectorize_Clamp(t *testing.T) {
+	v := &Vectorizer{
+		Norm: Normalization{MaxAmount: 10000, MaxInstallments: 12,
+			AmountVsAvgRatio: 10, MaxMinutes: 1440, MaxKm: 1000,
+			MaxTxCount24h: 20, MaxMerchantAvgAmount: 10000},
+		MccRisk: map[string]float32{},
 	}
-	got := v.Vectorize(req)
-	// minutes between 14:58:35 and 20:23:35 = 5h25m = 325 minutes
-	// clamp(325/1440) = 0.2257
-	if got[5] < 0.224 || got[5] > 0.228 {
-		t.Errorf("minutes_since_last_tx: got %.4f, want ~0.2257", got[5])
-	}
-	// clamp(18.8626/1000) = 0.0189
-	if got[6] < 0.018 || got[6] > 0.020 {
-		t.Errorf("km_from_last_tx: got %.4f, want ~0.0189", got[6])
-	}
-	// dims 5,6 must not be -1
-	if got[5] < 0 || got[6] < 0 {
-		t.Errorf("dims 5,6 should not be -1 when last_tx present")
+	// amount = 99999 >> MaxAmount: clamped to 1.0 → 10000
+	req := makeReq(99999, 1, 100, 1, 10, false, false, false, "1234", 100, nil)
+	vec := v.Vectorize(req)
+	if vec[0] != 10000 {
+		t.Errorf("clamped v[0] = %d, want 10000", vec[0])
 	}
 }

@@ -7,39 +7,30 @@ import (
 )
 
 var (
-	FirstKnownIdx    search.Index
-	FirstUnknownIdx  search.Index
-	SubseqKnownIdx   search.Index
-	SubseqUnknownIdx search.Index
-	Vec              *vectorizer.Vectorizer
+	// Indices holds the 12 partition indexes indexed by 4-bit tag.
+	// Tags 12-15 (online & card_present) are nil — router falls back.
+	Indices [search.NPartitions]*search.IvfIndex
+	Vec     *vectorizer.Vectorizer
 )
 
-func isUnknownMerchant(req dto.FraudRequest) bool {
-	for _, m := range req.Customer.KnownMerchants {
-		if m == req.Merchant.ID {
-			return false
-		}
-	}
-	return true
-}
-
+// CalculateFraudScore returns the fraud count (0..5) for a request.
 func CalculateFraudScore(req dto.FraudRequest) int {
 	if count, ok := fastPath(req); ok {
 		return count
 	}
-	vec := Vec.Vectorize(req)
-	if count, ok := RawTreePredict(vec); ok {
-		return count
+	tag := vectorizer.TagFromRequest(req)
+	idx := Indices[tag]
+	if idx == nil {
+		tag &^= 8 // clear card_present; try online-only
+		idx = Indices[tag]
 	}
-	unknown := isUnknownMerchant(req)
-	if req.LastTx == nil {
-		if unknown {
-			return FirstUnknownIdx.KNN(vec, 5)
-		}
-		return FirstKnownIdx.KNN(vec, 5)
+	if idx == nil {
+		tag &^= 4 // clear is_online; try base tag
+		idx = Indices[tag]
 	}
-	if unknown {
-		return SubseqUnknownIdx.KNN(vec, 5)
+	if idx == nil {
+		return 0 // fallback: approve
 	}
-	return SubseqKnownIdx.KNN(vec, 5)
+	q := Vec.Vectorize(req)
+	return int(idx.Search(&q))
 }
