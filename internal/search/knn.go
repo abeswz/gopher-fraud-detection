@@ -364,8 +364,8 @@ func (idx *IVFHIndex) knnFullMacroRepair(query *[16]float32, k int) int {
 	q0i16 := int32(qi16[0])
 
 	nMicro := min(nprobeThreshRepair, idx.K1*idx.K2)
-	var allMicro [nprobeThreshRepair]centEntry
-	topMicro := allMicro[:0]
+	var topMicroArr [nprobeThreshRepair]centEntry
+	topMicro := topMicroArr[:0]
 	maxMicroD := float32(0)
 	maxMicroP := 0
 
@@ -423,7 +423,7 @@ func (idx *IVFHIndex) knnFullMacroRepair(query *[16]float32, k int) int {
 	vecs := idx.Vectors
 	labs := idx.Labels
 
-	for _, ce := range allMicro {
+	for _, ce := range topMicro {
 		dCentroid := sqrt32(ce.dist)
 		radius := idx.Radii[ce.id]
 		lowerBound := dCentroid - radius
