@@ -1,71 +1,37 @@
 # gopher-fraud-detection
 
 Fraud detection API for [Rinha de Backend 2026](https://github.com/zanfranceschi/rinha-de-backend-2026).
-
-Two Go instances behind HAProxy. Each loads a 3M-vector IVF index at startup and scores transactions via approximate KNN (k=5, L2, IVF C=2000 nprobe=20) over a 14-dim feature vector.
-
-**Limits:** 1 CPU, 350 MB RAM total.
+Hard limits: 1 CPU, 350 MB RAM total.
 
 ---
 
-## Prerequisites
+## Index
 
-- Go 1.26+
-- Docker + Docker Compose
-- [uv](https://docs.astral.sh/uv/) (Python package manager)
-- [k6](https://k6.io/docs/get-started/installation/) (load testing)
-- `jq`
+3M labeled transactions split into 12 partitions via 4-bit tag:
+`card_present | is_online | unknown_merchant | has_last_tx`.
 
-Files not in the repo (obtain separately):
-```
-resources/references.json.gz   # 3M labeled transactions
-resources/normalization.json    # normalization constants
-resources/mcc_risk.json         # MCC risk scores
-test/test.js                    # k6 test script
-test/test-data.json             # k6 test dataset
-```
+Each partition has its own flat IVF index — adaptive K (n/300, clamped [64, 2048]),
+Lloyd's 20 iterations, int16 vectors (×10000 scale), AoS layout with per-cluster bounding boxes.
 
----
+## Search
 
-## Local development
+Tagged at request time → routed to partition → approximate KNN (k=5, L2, nprobe=12).
 
-```bash
-# Run unit tests
-go test ./...
+- **Bbox pruning:** clusters whose lower-bound distance exceeds the current worst neighbor are skipped.
+- **SIMD:** cluster distances computed in AVX2 assembly, 8 clusters/iteration (~13× over scalar).
+- **Repair pass:** if result count is ambiguous (1–4), all clusters are swept.
+- `fraud_score = fraudCount / 5.0`, approved if < 0.6 (fixed by spec).
 
-# Build binary
-CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o fraud-api ./cmd/api
-```
+## Why a Go load balancer
 
----
+HAProxy was the actual bottleneck — not the search. At ~3000 req/s it saturated its 0.10 CPU
+budget, got CFS-throttled, and paused requests up to 100ms. The Go LB uses raw epoll +
+`SO_REUSEPORT` + `SCHED_FIFO`, burning ~2% CPU at peak. That freed one core to redistribute:
+`lb=0.20 / api1=0.40 / api2=0.40`. Result: p99 dropped from 26ms → 0.3ms, score 4500 → 6000.
 
-## Local benchmark
+## Curiosities
 
-Builds the IVF index (K-means, ~5 min first run), spins up the full stack, runs k6:
-
-```bash
-make bench
-```
-
-Output:
-```
-p99:4ms score:5800 FP:12 FN:3 ERR:0
-```
-
----
-
-## Architecture
-
-```
-Client → HAProxy :9999
-           ├── api1  unix:/run/sock/api1.sock
-           └── api2  unix:/run/sock/api2.sock
-```
-
-Each instance loads `index/references.bin` (IVF: 2000 clusters, int16 vectors) at startup. No shared state.
-
-Pipeline per request:
-1. Decode JSON → `FraudRequest`
-2. Vectorize → `[14]float32` (normalization + MCC risk)
-3. IVF KNN(k=5, nprobe=20): find 20 nearest clusters → search ~30K vectors → fraud count
-4. `fraud_score = count / 5.0`, `approved = score < 0.6`
+- **GC off.** `SetGCPercent(-1)` + `SetMemoryLimit(160 MiB)`. Index allocated once, never freed.
+- **Real-time scheduling.** `SCHED_FIFO` via `CAP_SYS_NICE` — epoll workers never preempted mid-request.
+- **No framework.** Raw epoll loop over unix sockets. No Gin, no Fiber, no Zap.
+- **Score 6000/6000 locally.** FP=0, FN=0, p99=0.3ms. Bottleneck is the remote test harness.
