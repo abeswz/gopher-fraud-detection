@@ -12,6 +12,7 @@ import (
 	"gopher-fraud-detection/internal/search"
 	"gopher-fraud-detection/internal/service"
 	"gopher-fraud-detection/internal/vectorizer"
+
 	"golang.org/x/sys/unix"
 )
 
@@ -250,7 +251,7 @@ func main() {
 	unix.Mlockall(unix.MCL_CURRENT | unix.MCL_FUTURE)
 
 	normPath := envOr("NORM_PATH", "resources/normalization.json")
-	mccPath  := envOr("MCC_PATH",  "resources/mcc_risk.json")
+	mccPath := envOr("MCC_PATH", "resources/mcc_risk.json")
 	indexDir := envOr("INDEX_DIR", "index")
 	sockPath := envOr("SOCK", "")
 	if sockPath == "" {

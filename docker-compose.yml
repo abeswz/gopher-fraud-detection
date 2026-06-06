@@ -1,6 +1,8 @@
 x-api: &api
   build: .
   restart: unless-stopped
+  cap_add:
+    - SYS_NICE
   ulimits:
     memlock: -1
     nofile:
@@ -13,8 +15,8 @@ x-api: &api
   deploy:
     resources:
       limits:
-        cpus: "0.40"
-        memory: "168MB"
+        cpus: "0.45"
+        memory: "172MB"
 
 volumes:
   sock:
@@ -44,8 +46,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.20"
-          memory: "14MB"
+          cpus: "0.10"
+          memory: "6MB"
 
   api1:
     <<: *api
