@@ -18,7 +18,10 @@ Lloyd's 20 iterations, int16 vectors (×10000 scale), AoS layout with per-cluste
 Tagged at request time → routed to partition → approximate KNN (k=5, L2, nprobe=12).
 
 - **Bbox pruning:** clusters whose lower-bound distance exceeds the current worst neighbor are skipped.
-- **SIMD:** cluster distances computed in AVX2 assembly, 8 clusters/iteration (~13× over scalar).
+- **SIMD:** two hand-written AVX2 routines in `internal/search/knn_amd64.s`. `distL2i16q` computes
+  exact L2² between two int16 vectors using `VPSUBW + VPMADDWD` — no float conversion ever.
+  `computeClusterBatch8` scores 8 cluster bboxes in parallel via `VPBROADCASTD`, feeding the
+  pruning step. Together ~13× faster than scalar Go.
 - **Repair pass:** if result count is ambiguous (1–4), all clusters are swept.
 - `fraud_score = fraudCount / 5.0`, approved if < 0.6 (fixed by spec).
 
